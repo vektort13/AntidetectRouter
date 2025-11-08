@@ -1,4 +1,3 @@
-cat >/root/road-warrior.sh <<'EOF'
 #! /bin/sh
 # Road-Warrior for OpenWrt 24.10.x (x86_64)
 # LuCI + (опц.) luci-app-passwall + Xray(TPROXY+DNS) + OpenVPN (no-enc) + IPv6 + интерактив TTL
@@ -356,6 +355,3 @@ echo "OpenVPN профиль (клиент): /root/${CLIENT}.ovpn"
 echo "Проверка TPROXY:  nft list ruleset | sed -n '/xray_preroute/,/}/p'"
 echo "Логи: Xray /var/log/xray/*.log | OpenVPN 'logread -e openvpn'"
 EOF
-
-chmod +x /root/road-warrior.sh
-sh /root/road-warrior.sh
