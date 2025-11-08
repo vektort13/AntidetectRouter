@@ -15,60 +15,6 @@ cidr2mask() { # "10.99.0.0/24" -> "255.255.255.0"
 }
 wan_zone_idx() { uci show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]\+\)\]\.name='wan'.*/\1/p" | head -n1; }
 
-# Более надёжная загрузка luci-app-xray из GitHub
-install_luci_app_xray() {
-  if opkg list-installed | grep -q '^luci-app-xray'; then return 0; fi
-  opkg install luci-app-xray 2>/dev/null || true
-  if opkg list-installed | grep -q '^luci-app-xray'; then return 0; fi
-
-  say "Пробую взять luci-app-xray из GitHub Releases"
-  UA='Mozilla/5.0'
-  # Попытка №1: GitHub API (если доступен)
-  URL="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H "User-Agent: $UA" \
-         https://api.github.com/repos/yichya/luci-app-xray/releases/latest 2>/dev/null \
-         | jq -r '.assets[]?.browser_download_url' \
-         | grep -E 'luci-app-xray_.*_all\.ipk$' | head -n1 || true)"
-
-  # Попытка №2: HTML /releases/latest (IPv4/IPv6, на всякий случай дублируем запрос «-4»)
-  [ -n "$URL" ] || {
-    LATEST="$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/yichya/luci-app-xray/releases/latest 2>/dev/null \
-          || curl -4fsSL -o /dev/null -w '%{url_effective}' https://github.com/yichya/luci-app-xray/releases/latest 2>/dev/null || true)"
-    if [ -n "$LATEST" ]; then
-      HTML="$(curl -fsSL -H "User-Agent: $UA" "$LATEST" 2>/dev/null || curl -4fsSL -H "User-Agent: $UA" "$LATEST" 2>/dev/null || true)"
-      URL="$(printf '%s' "$HTML" \
-            | tr '\n' ' ' \
-            | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_[^"]*_all\.ipk\)".*#https://github.com\1#p' \
-            | head -n1)"
-      # Попробуем expanded_assets на случай ленивой разметки
-      [ -n "$URL" ] || {
-        EXP="$(printf '%s' "$LATEST" | sed 's/releases\/tag/releases\/expanded_assets/')"
-        HTML="$(curl -fsSL -H "User-Agent: $UA" "$EXP" 2>/dev/null || curl -4fsSL -H "User-Agent: $UA" "$EXP" 2>/dev/null || true)"
-        URL="$(printf '%s' "$HTML" \
-              | tr '\n' ' ' \
-              | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_[^"]*_all\.ipk\)".*#https://github.com\1#p' \
-              | head -n1)"
-      }
-    fi
-  }
-
-  # Попытка №3: общая страница /releases
-  [ -n "$URL" ] || URL="$(curl -fsSL -H "User-Agent: $UA" https://github.com/yichya/luci-app-xray/releases 2>/dev/null \
-                      | tr '\n' ' ' \
-                      | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_[^"]*_all\.ipk\)".*#https://github.com\1#p' \
-                      | head -n1 || true)"
-
-  if [ -n "$URL" ]; then
-    say "Скачиваю luci-app-xray: $URL"
-    if wget -O /tmp/luci-app-xray.ipk "$URL"; then
-      opkg install /tmp/luci-app-xray.ipk || warn "Не удалось установить luci-app-xray из файла."
-    else
-      warn "Не смог скачать ipk luci-app-xray по ссылке."
-    fi
-  else
-    warn "Не удалось получить ссылку на luci-app-xray. Можно поставить вручную (LuCI→System→Software) или загрузить ipk в /tmp и 'opkg install /tmp/xxx.ipk'."
-  fi
-}
-
 # ---------- 0) WAN autodetect ----------
 WAN_IF="$(ubus call network.interface.wan status 2>/dev/null | sed -n 's/.*\"l3_device\":\"\([^\"]*\)\".*/\1/p')"
 [ -z "$WAN_IF" ] && WAN_IF="$(ip route | awk '/default/ {print $5; exit}')"
@@ -106,7 +52,33 @@ opkg install nano 2>/dev/null || true
 
 # ---------- 3) luci-app-xray ----------
 say "Ставлю luci-app-xray (GUI)"
-install_luci_app_xray
+opkg install luci-app-xray 2>/dev/null || true
+if ! opkg list-installed | grep -q '^luci-app-xray'; then
+  warn "luci-app-xray нет в фидах — тяну ipk из Releases"
+  URL_API="$(curl -fsSL -H 'User-Agent: curl/8' \
+    https://api.github.com/repos/yichya/luci-app-xray/releases/latest \
+    | jq -r '.assets[]?.browser_download_url' \
+    | grep -E 'luci-app-xray_.*_all\.ipk' | head -n1 || true)"
+  if [ -z "$URL_API" ]; then
+    LATEST_TAG="$(curl -sIL -o /dev/null -w '%{url_effective}' \
+      https://github.com/yichya/luci-app-xray/releases/latest | sed 's#.*/tag/##')"
+    if [ -n "$LATEST_TAG" ]; then
+      REL_HTML="$(curl -fsSL -H 'User-Agent: Mozilla/5.0' \
+        "https://github.com/yichya/luci-app-xray/releases/expanded_assets/${LATEST_TAG}" || true)"
+      ASSET_PATH="$(printf '%s' "$REL_HTML" \
+        | tr '\n' ' ' \
+        | grep -oE '/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_[^"]*_all\.ipk' \
+        | head -n1)"
+      [ -n "$ASSET_PATH" ] && URL_API="https://github.com${ASSET_PATH}"
+    fi
+  fi
+  if [ -n "$URL_API" ]; then
+    wget -O /tmp/luci-app-xray.ipk "$URL_API" || true
+    opkg install /tmp/luci-app-xray.ipk 2>/dev/null || warn "Не удалось установить luci-app-xray из Releases."
+  else
+    warn "Не смог извлечь ссылку на ipk. Установите вручную: LuCI → System → Software (Upload package)."
+  fi
+fi
 
 # ---------- 4) LuCI enable ----------
 /etc/init.d/uhttpd enable
@@ -160,7 +132,6 @@ chmod +x /etc/hotplug.d/iface/99-xray-tproxy
 
 # ---------- 7) nft TPROXY (fw4 include; IPv4+IPv6) ----------
 say "Вкатываю nft-правила TPROXY (fw4 include на tun0 → :12345)"
-mkdir -p /etc/nftables.d
 cat >/etc/nftables.d/90-xray-tproxy.nft <<'NFT'
 # Этот файл включается ВНУТРЬ "table inet fw4 { ... }"
 
@@ -176,7 +147,7 @@ set xray_v6_skip { type ipv6_addr; flags interval; elements = {
 chain xray_preroute {
   type filter hook prerouting priority mangle; policy accept;
 
-  # DNS (сначала) — IPv4 и IPv6
+  # DNS (сначала)
   iifname "tun0" udp dport 53 tproxy ip  to :12345 meta mark set 0x1
   iifname "tun0" tcp dport 53 tproxy ip  to :12345 meta mark set 0x1
   iifname "tun0" udp dport 53 tproxy ip6 to :12345 meta mark set 0x1
@@ -198,22 +169,16 @@ NFT
 /etc/init.d/firewall restart
 
 # ---------- 8) OpenVPN (UDP/TUN) no-enc + PKI (идемпотентно) ----------
-say "Ставлю openvpn-easy-rsa (если есть), иначе PKI через OpenSSL (fallback)"
-if opkg install openvpn-easy-rsa 2>/dev/null; then
-  say "EasyRSA найден — генерю/переиспользую PKI"
+say "Проверяю/создаю PKI (EasyRSA)"
+if opkg list-installed | grep -q '^openvpn-easy-rsa'; then
   EASYRSA_DIR="/etc/easy-rsa"
-  EASYRSA_BIN="$(command -v easyrsa || echo "$EASYRSA_DIR/easyrsa")"
-  export EASYRSA_PKI="$EASYRSA_DIR/pki"
+  EASYRSA_PKI="$EASYRSA_DIR/pki"
   mkdir -p "$EASYRSA_DIR" "$EASYRSA_PKI"
-  cd "$EASYRSA_DIR"
-
-  # Идемпотентные шаги:
-  [ -d "$EASYRSA_PKI" ] || "$EASYRSA_BIN" init-pki
-  [ -f "$EASYRSA_PKI/ca.crt" ]                 || EASYRSA_BATCH=1 "$EASYRSA_BIN" build-ca nopass
-  [ -f "$EASYRSA_PKI/issued/server.crt" ]      || EASYRSA_BATCH=1 "$EASYRSA_BIN" build-server-full server nopass
+  [ -d "$EASYRSA_PKI" ] || EASYRSA_PKI="$EASYRSA_DIR/pki" easyrsa init-pki
+  [ -f "$EASYRSA_PKI/ca.crt" ] || EASYRSA_BATCH=1 EASYRSA_PKI="$EASYRSA_PKI" easyrsa build-ca nopass
+  [ -f "$EASYRSA_PKI/issued/server.crt" ] || EASYRSA_BATCH=1 EASYRSA_PKI="$EASYRSA_PKI" easyrsa build-server-full server nopass
   CLIENT="${CLIENT:-client1}"
-  [ -f "$EASYRSA_PKI/issued/${CLIENT}.crt" ]   || EASYRSA_BATCH=1 "$EASYRSA_BIN" build-client-full "$CLIENT" nopass
-
+  [ -f "$EASYRSA_PKI/issued/${CLIENT}.crt" ] || EASYRSA_BATCH=1 EASYRSA_PKI="$EASYRSA_PKI" easyrsa build-client-full "$CLIENT" nopass
   mkdir -p /etc/openvpn/pki
   cp -r "$EASYRSA_PKI/"* /etc/openvpn/pki/
 else
@@ -236,7 +201,7 @@ else
     openssl x509 -req -in "$OVPN_PKI/${CLIENT}.csr" -CA "$OVPN_PKI/ca.crt" -CAkey "$OVPN_PKI/ca.key" -CAcreateserial -out "$OVPN_PKI/${CLIENT}.crt" -days 3650 -sha256
   }
 fi
-openvpn --genkey secret /etc/openvpn/pki/tc.key || true
+openvpn --genkey secret /etc/openvpn/pki/tc.key 2>/dev/null || true
 
 OPORT="${OPORT:-1194}"
 VPN4_NET="${VPN4_NET:-10.99.0.0/24}"
@@ -287,7 +252,6 @@ verb 3
 data-ciphers none
 data-ciphers-fallback none
 auth none
-
 <tls-crypt>
 $(cat /etc/openvpn/pki/tc.key 2>/dev/null)
 </tls-crypt>
@@ -302,7 +266,7 @@ $(cat /etc/openvpn/pki/private/${CLIENT}.key 2>/dev/null || cat /etc/openvpn/pki
 </key>
 EOCLI
 
-# ---------- 9) Firewall: VPN zone, NAT4/NAT6, UDP/1194 ----------
+# ---------- 9) Firewall: vpn zone, NAT4/NAT6, UDP/1194 ----------
 say "Настраиваю firewall (зона VPN, NAT v4/v6, порт 1194/udp)"
 uci -q delete network.vpn
 uci add network interface
