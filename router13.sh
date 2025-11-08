@@ -55,9 +55,7 @@ opkg install luci-app-xray 2>/dev/null || true
 if ! opkg list-installed | grep -q '^luci-app-xray'; then
   warn "luci-app-xray нет в фидах — тяну ipk из HTML Releases"
   REL_HTML="$(curl -fsSL -H 'User-Agent: Mozilla/5.0' https://github.com/yichya/luci-app-xray/releases/latest || true)"
-  ASSET_PATH="$(printf '%s\n' "$REL_HTML" \
-    | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_.*_all\.ipk\)".*#\1#p' \
-    | head -n1)"
+  ASSET_PATH="$(printf '%s\n' "$REL_HTML" | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_.*_all\.ipk\)".*#\1#p' | head -n1)"
   if [ -n "$ASSET_PATH" ]; then
     wget -O /tmp/luci-app-xray.ipk "https://github.com${ASSET_PATH}" || true
     opkg install /tmp/luci-app-xray.ipk 2>/dev/null || warn "Не удалось установить luci-app-xray из Releases."
@@ -116,43 +114,46 @@ esac
 HPL
 chmod +x /etc/hotplug.d/iface/99-xray-tproxy
 
-# ---------- 7) nft TPROXY (IPv4+IPv6) ----------
-say "Вкатываю nft-правила TPROXY (prerouting на tun0 → :12345)"
-nft list tables | grep -q '^table inet xray$' && nft delete table inet xray
+# ---------- 7) nft TPROXY (fw4 include; IPv4+IPv6) ----------
+say "Вкатываю nft-правила TPROXY (fw4 include на tun0 → :12345)"
+# Не грузим напрямую через `nft -f` — fw4 сам подхватит include при рестарте firewall.
 cat >/etc/nftables.d/90-xray-tproxy.nft <<'NFT'
-table inet xray {
-  set v4_skip { type ipv4_addr; flags interval; elements = {
+# Этот файл включается ВНУТРЬ "table inet fw4 { ... }"
+# поэтому НЕЛЬЗЯ писать "table inet ..." здесь.
+
+set xray_v4_skip { type ipv4_addr; flags interval; elements = {
     127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
     169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4
-  } }
-  set v6_skip { type ipv6_addr; flags interval; elements = {
+} }
+
+set xray_v6_skip { type ipv6_addr; flags interval; elements = {
     ::1/128, fc00::/7, fe80::/10, ff00::/8
-  } }
+} }
 
-  chain preroute {
-    type filter hook prerouting priority mangle; policy accept;
+chain xray_preroute {
+  type filter hook prerouting priority mangle; policy accept;
 
-    # DNS (v4 и v6) — сначала
-    iifname "tun0" udp dport 53 tproxy ip  to :12345 meta mark set 0x1
-    iifname "tun0" tcp dport 53 tproxy ip  to :12345 meta mark set 0x1
-    iifname "tun0" udp dport 53 tproxy ip6 to :12345 meta mark set 0x1
-    iifname "tun0" tcp dport 53 tproxy ip6 to :12345 meta mark set 0x1
+  # DNS (сначала) — IPv4 и IPv6
+  iifname "tun0" udp dport 53 tproxy ip  to :12345 meta mark set 0x1
+  iifname "tun0" tcp dport 53 tproxy ip  to :12345 meta mark set 0x1
+  iifname "tun0" udp dport 53 tproxy ip6 to :12345 meta mark set 0x1
+  iifname "tun0" tcp dport 53 tproxy ip6 to :12345 meta mark set 0x1
 
-    # Остальной TCP/UDP
-    iifname "tun0" ip  daddr @v4_skip return
-    iifname "tun0" meta l4proto { tcp, udp } tproxy ip  to :12345 meta mark set 0x1
+  # Остальной TCP/UDP
+  iifname "tun0" ip  daddr @xray_v4_skip return
+  iifname "tun0" meta l4proto { tcp, udp } tproxy ip  to :12345 meta mark set 0x1
 
-    iifname "tun0" ip6 daddr @v6_skip return
-    iifname "tun0" meta l4proto { tcp, udp } tproxy ip6 to :12345 meta mark set 0x1
-  }
+  iifname "tun0" ip6 daddr @xray_v6_skip return
+  iifname "tun0" meta l4proto { tcp, udp } tproxy ip6 to :12345 meta mark set 0x1
+}
 
-  chain accept_mark {
-    type filter hook input priority mangle; policy accept;
-    meta mark 0x1 accept
-  }
+chain xray_accept_mark {
+  type filter hook input priority mangle; policy accept;
+  meta mark 0x1 accept
 }
 NFT
-nft -f /etc/nftables.d/90-xray-tproxy.nft
+# загрузит fw4:
+#/usr/sbin/nft -f /etc/nftables.d/90-xray-tproxy.nft  # НЕ нужно!
 /etc/init.d/firewall restart
 
 # ---------- 8) OpenVPN (UDP/TUN) no-enc + PKI ----------
@@ -316,14 +317,12 @@ esac
 if [ -n "$TTL_RULE" ]; then
   say "Применяю TTL/HopLimit на исходящем (${WAN_IF})"
   cat >/etc/nftables.d/95-ttlfix.nft <<NFT2
-table inet ttlfix {
-  chain post {
-    type route hook postrouting priority mangle; policy accept;
-    oifname "${WAN_IF}" ${TTL_RULE}
-  }
+# Вставляется внутрь table inet fw4
+chain xrl_ttl_post {
+  type route hook postrouting priority mangle; policy accept;
+  oifname "${WAN_IF}" ${TTL_RULE}
 }
 NFT2
-  nft -f /etc/nftables.d/95-ttlfix.nft
   /etc/init.d/firewall restart
 fi
 
@@ -335,4 +334,4 @@ echo "LuCI (HTTPS): https://${IP4}"
 [ -n "$IP6" ] && echo "LuCI (IPv6): https://[${IP6}]/"
 echo "Xray GUI: LuCI → Services → Xray → добавь свой прокси (Node) и включи Transparent Proxy (TCP+UDP)"
 echo "OpenVPN клиентский профиль: /root/${CLIENT}.ovpn  (используй OpenVPN GUI 2.5/2.6; Connect v3 не поддерживает no-enc)"
-echo "Логи: Xray /var/log/xray/*.log | nft 'nft list table inet xray' | OpenVPN 'logread -e openvpn'"
+echo "Логи: Xray /var/log/xray/*.log | nft: 'nft list ruleset' | OpenVPN: 'logread -e openvpn'"
