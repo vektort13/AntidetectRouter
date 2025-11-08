@@ -75,7 +75,7 @@ fi
 if [ "$AUTOXR" = "Y" ] || [ "$AUTOXR" = "y" ]; then
   say "Добавляю репозиторий Passwall (x86_64) и ставлю GUI"
   
-  # 0. Очищаем старые/битые ссылки (с 'master'), если они есть
+  # 0. Очищаем старые/битые ссылки (с 'master' или другими ошибками), если они есть
   sed -i '/passwall_packages/d' /etc/opkg/custom.conf 2>/dev/null
   sed -i '/passwall_luci/d' /etc/opkg/custom.conf 2>/dev/null
 
@@ -237,7 +237,7 @@ uci commit openvpn
 /etc/init.d/openvpn restart >/dev/null 2>&1
 
 # ВАЖНО: определить PUB4 ДО генерации .ovpn
-PUB4="$(ip -4 addr show dev "$WAN_IF" | awk '/inet /{print $2}' | head -n1 | cut -d/ -f1)"
+PUB4="$(ip -4 addr show dev "$WAN_IF" | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
 
 cat >/root/${CLIENT}.ovpn <<EOCLI
 client
