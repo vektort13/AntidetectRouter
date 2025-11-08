@@ -1,4 +1,3 @@
-cat >/root/road-warrior.sh <<'EOF'
 #!/bin/sh
 # Road-Warrior for OpenWrt 24.10.x (x86_64)
 # LuCI + luci-app-xray + Xray(TPROXY+DNS) + OpenVPN no-enc + IPv6 + TTL
@@ -45,9 +44,14 @@ say "Устанавливаю пакеты (LuCI, Xray, OpenVPN, nft tproxy, dns
 opkg install -V1 luci luci-ssl ca-bundle curl wget jq ip-full openssl-util
 opkg remove dnsmasq 2>/dev/null || true
 opkg install dnsmasq-full
-opkg install xray-core xray-geodata 2>/dev/null || true
-opkg install nftables kmod-nft-tproxy nftables-json
+# Xray core + геобазы (оба варианта имён)
+opkg install xray-core 2>/dev/null || true
+opkg install v2ray-geoip v2ray-geosite 2>/dev/null || opkg install xray-geodata 2>/dev/null || true
+# TPROXY
+opkg install nftables kmod-nft-tproxy
+# OpenVPN
 opkg install openvpn-openssl
+# (опц.) редактор
 opkg install nano 2>/dev/null || true
 
 # ---------- 3) luci-app-xray ----------
@@ -56,7 +60,10 @@ opkg install luci-app-xray 2>/dev/null || true
 if ! opkg list-installed | grep -q '^luci-app-xray'; then
   warn "luci-app-xray нет в фидах — тяну ipk из HTML Releases"
   REL_HTML="$(curl -fsSL -H 'User-Agent: Mozilla/5.0' https://github.com/yichya/luci-app-xray/releases/latest || true)"
-  ASSET_PATH="$(printf '%s\n' "$REL_HTML" | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_.*_all\.ipk\)".*#\1#p' | head -n1)"
+  # Сплющиваем HTML в одну строку, затем вырезаем ссылку на ipk
+  ASSET_PATH="$(printf '%s' "$REL_HTML" | tr '\n' ' ' \
+    | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_[^"]*_all\.ipk\)".*#\1#p' \
+    | head -n1)"
   if [ -n "$ASSET_PATH" ]; then
     wget -O /tmp/luci-app-xray.ipk "https://github.com${ASSET_PATH}" || true
     opkg install /tmp/luci-app-xray.ipk 2>/dev/null || warn "Не удалось установить luci-app-xray из Releases."
@@ -117,10 +124,8 @@ chmod +x /etc/hotplug.d/iface/99-xray-tproxy
 
 # ---------- 7) nft TPROXY (fw4 include; IPv4+IPv6) ----------
 say "Вкатываю nft-правила TPROXY (fw4 include на tun0 → :12345)"
-mkdir -p /etc/nftables.d
 cat >/etc/nftables.d/90-xray-tproxy.nft <<'NFT'
-# Этот файл включается ВНУТРЬ "table inet fw4 { ... }"
-# поэтому НЕЛЬЗЯ писать "table inet ..." здесь.
+# Этот файл включается ВНУТРЬ "table inet fw4 { ... }" — НЕ объявляй таблицу здесь.
 
 set xray_v4_skip { type ipv4_addr; flags interval; elements = {
     127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
@@ -158,17 +163,21 @@ NFT
 # ---------- 8) OpenVPN (UDP/TUN) no-enc + PKI ----------
 say "Ставлю openvpn-easy-rsa (если есть), иначе PKI через OpenSSL (fallback)"
 if opkg install openvpn-easy-rsa 2>/dev/null; then
-  say "EasyRSA найден — генерю PKI"
-  export EASYRSA_BATCH=1
-  export EASYRSA_PKI=/etc/easy-rsa/pki
-  mkdir -p "$EASYRSA_PKI"
-  easyrsa init-pki
-  [ -f "$EASYRSA_PKI/ca.crt" ] || easyrsa build-ca nopass
-  [ -f "$EASYRSA_PKI/issued/server.crt" ] || easyrsa build-server-full server nopass
+  say "EasyRSA найден — генерю PKI в /etc/easy-rsa/pki"
+  EASYRSA_BIN="$(command -v easyrsa || echo /usr/sbin/easyrsa)"
+  EASYRSA_DIR="/etc/easy-rsa"
+  mkdir -p "$EASYRSA_DIR"
+  export EASYRSA_PKI="$EASYRSA_DIR/pki"
+  cd "$EASYRSA_DIR"
+
+  [ -d "$EASYRSA_PKI" ] || "$EASYRSA_BIN" init-pki
+  EASYRSA_BATCH=1 "$EASYRSA_BIN" build-ca nopass
+  EASYRSA_BATCH=1 "$EASYRSA_BIN" build-server-full server nopass
   CLIENT="${CLIENT:-client1}"
-  [ -f "$EASYRSA_PKI/issued/${CLIENT}.crt" ] || easyrsa build-client-full "${CLIENT}" nopass
+  EASYRSA_BATCH=1 "$EASYRSA_BIN" build-client-full "$CLIENT" nopass
+
   mkdir -p /etc/openvpn/pki
-  cp -r "$EASYRSA_PKI"/* /etc/openvpn/pki/
+  cp -r "$EASYRSA_PKI/"* /etc/openvpn/pki/
 else
   warn "openvpn-easy-rsa недоступен — делаю PKI через OpenSSL (self-signed CA)"
   OVPN_PKI=/etc/openvpn/pki
@@ -314,7 +323,6 @@ esac
 
 if [ -n "$TTL_RULE" ]; then
   say "Применяю TTL/HopLimit на исходящем (${WAN_IF})"
-  mkdir -p /etc/nftables.d
   cat >/etc/nftables.d/95-ttlfix.nft <<NFT2
 # Вставляется внутрь table inet fw4
 chain xrl_ttl_post {
@@ -328,13 +336,9 @@ fi
 # ---------- 11) Summary ----------
 say "ГОТОВО!"
 IP4="$(ip -4 addr show dev "$WAN_IF" | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
-IP6="$(ip -6 addr show dev "$WAN_IF" scope global | awk '/inet6 /{print $2}' | cut -d/ -f1 | head -n1)"
+IP6="$(ip -6 addr show dev "$WAN_IF" scope global | awk '/inet6 /{print $2}' | cut -d/ -f1)"
 echo "LuCI (HTTPS): https://${IP4}"
 [ -n "$IP6" ] && echo "LuCI (IPv6): https://[${IP6}]/"
 echo "Xray GUI: LuCI → Services → Xray → добавь свой прокси (Node) и включи Transparent Proxy (TCP+UDP)"
-echo "OpenVPN клиентский профиль: /root/${CLIENT}.ovpn  (используй OpenVPN GUI 2.5/2.6; Connect v3 не поддерживает no-enc)"
+echo "OpenVPN клиентский профиль: /root/${CLIENT}.ovpn  (OpenVPN GUI 2.5/2.6; Connect v3 не поддерживает no-enc)"
 echo "Логи: Xray /var/log/xray/*.log | nft: 'nft list ruleset' | OpenVPN: 'logread -e openvpn'"
-EOF
-
-chmod +x /root/road-warrior.sh
-/root/road-warrior.sh
