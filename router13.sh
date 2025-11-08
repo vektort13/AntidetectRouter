@@ -1,7 +1,7 @@
 cat >/root/road-warrior.sh <<'EOF'
 #! /bin/sh
 # Road-Warrior for OpenWrt 24.10.x (x86_64)
-# LuCI + (опц.) luci-app-xray + Xray(TPROXY+DNS) + OpenVPN (no-enc) + IPv6 + интерактив TTL
+# LuCI + (опц.) luci-app-passwall + Xray(TPROXY+DNS) + OpenVPN (no-enc) + IPv6 + интерактив TTL
 
 say()  { printf "\033[1;32m[RW]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[RW]\033[0m %s\n" "$*"; }
@@ -47,7 +47,7 @@ if [ "$SETPW" = "1" ]; then
   fi
 fi
 
-printf "Пытаться автоматически поставить luci-app-xray (GUI для Xray)? [Y/n]: "
+printf "Пытаться автоматически поставить luci-app-passwall (GUI для Xray)? [Y/n]: "
 read -r AUTOXR; [ -z "$AUTOXR" ] && AUTOXR="Y"
 
 # ---------- 1) distfeeds + пакеты ----------
@@ -72,29 +72,24 @@ if ! has_v4; then
   uci commit network; /etc/init.d/network restart; sleep 4
 fi
 
-# ---------- 3) (опц.) установка luci-app-xray ----------
+# ---------- 3) (опц.) установка luci-app-passwall ----------
 if [ "$AUTOXR" = "Y" ] || [ "$AUTOXR" = "y" ]; then
-  say "Пытаюсь поставить luci-app-xray"
-  opkg install luci-app-xray 2>/dev/null || true
-  if ! opkg list-installed | grep -q '^luci-app-xray'; then
-    say "Пробую через GitHub API"
-    URL="$(curl -fsSL -H 'User-Agent: RW' -H 'Accept: application/vnd.github+json' \
-          https://api.github.com/repos/yichya/luci-app-xray/releases 2>/dev/null \
-          | jq -r '[ .[] | .assets[]?.browser_download_url ] | map(select(test("luci-app-xray_.*_all\\.ipk$"))) | first' || true)"
-    if [ -n "$URL" ]; then
-      wget -O /tmp/luci-app-xray.ipk "$URL" 2>/dev/null || true
-      opkg install /tmp/luci-app-xray.ipk 2>/dev/null || true
-    fi
-  fi
-  if ! opkg list-installed | grep -q '^luci-app-xray'; then
-    warn "Автоматически не вышло."
-    printf "Вставьте ПРЯМУЮ ссылку на luci-app-xray *.ipk (или Enter, чтобы пропустить): "
-    read -r XRURL
-    if [ -n "$XRURL" ]; then
-      wget -O /tmp/luci-app-xray.ipk "$XRURL" && opkg install /tmp/luci-app-xray.ipk || warn "Не удалось поставить luci-app-xray по ссылке."
-    else
-      warn "Можно установить вручную в LuCI → System → Software → Upload."
-    fi
+  say "Добавляю репозиторий Passwall (x86_64) и ставлю GUI"
+  
+  # 1. Добавляем фиды
+  echo "src/gz passwall_packages https://raw.githubusercontent.com/xiaorouji/openwrt-passwall-packages/master/x86_64/packages" >> /etc/opkg/custom.conf
+  echo "src/gz passwall_luci https://raw.githubusercontent.com/xiaorouji/openwrt-passwall-packages/master/x86_64/luci" >> /etc/opkg/custom.conf
+  
+  # 2. Обновляем и ставим
+  opkg update || true
+  opkg install luci-app-passwall 2>/dev/null || true
+
+  # 3. Проверка
+  if opkg list-installed | grep -q '^luci-app-passwall'; then
+    say "luci-app-passwall успешно установлен."
+  else
+    warn "Автоматическая установка luci-app-passwall не удалась."
+    warn "Проверьте /etc/opkg/custom.conf и попробуйте 'opkg install luci-app-passwall' вручную."
   fi
 fi
 
@@ -352,7 +347,7 @@ IP6="$(ip -6 addr show dev "$WAN_IF" scope global | awk '/inet6 /{print $2}' | c
 echo "LuCI (HTTPS): https://${IP4}"
 [ -n "$IP6" ] && echo "LuCI (IPv6): https://[${IP6}]/"
 echo "Учётка LuCI/SSH: root ; пароль: ${PW_STATUS}"
-echo "Xray: LuCI → Services → Xray (после установки luci-app-xray)"
+echo "Passwall: LuCI → Services → Passwall (если установлен)"
 echo "OpenVPN профиль (клиент): /root/${CLIENT}.ovpn"
 echo "Проверка TPROXY:  nft list ruleset | sed -n '/xray_preroute/,/}/p'"
 echo "Логи: Xray /var/log/xray/*.log | OpenVPN 'logread -e openvpn'"
