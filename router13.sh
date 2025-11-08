@@ -28,6 +28,10 @@ if ! has_v4; then
 fi
 
 # -------- 1) Пакеты --------
+#easy rsa fix
+cp /etc/opkg/distfeeds.conf /etc/opkg/distfeeds.conf.bak
+sed -i 's#https://downloads.openwrt.org/releases/[0-9.]\+/packages/x86_64/#https://downloads.openwrt.org/releases/packages-24.10/x86_64/#g' /etc/opkg/distfeeds.conf
+
 say "Устанавливаю пакеты (LuCI, Xray, OpenVPN, nft tproxy, dnsmasq-full, утилиты)"
 opkg update
 # базовые
@@ -37,18 +41,21 @@ opkg remove dnsmasq 2>/dev/null || true
 opkg install dnsmasq-full
 # Xray + GUI
 opkg install xray-core xray-geodata 2>/dev/null || true
-opkg install luci-app-xray 2>/dev/null || true
-if ! opkg list-installed | grep -q '^luci-app-xray'; then
-  warn "luci-app-xray в фидах не найден — пробую из релиза GitHub..."
-  # универсальный fall-back (может не сработать у некоторых сборок — тогда поставь вручную через LuCI → Software)
-  URL="$(curl -fsSL https://api.github.com/repos/yichya/luci-app-xray/releases/latest | jq -r '.assets[]?.browser_download_url' | grep '_all.ipk' | head -n1 || true)"
-  if [ -n "$URL" ]; then
-    curl -fsSL -o /tmp/luci-app-xray.ipk "$URL"
-    opkg install /tmp/luci-app-xray.ipk || warn "Не удалось поставить luci-app-xray из релиза."
-  else
-    warn "Не смог получить ссылку на релиз luci-app-xray."
-  fi
-fi
+# GUI для Xray: пробуем из фидов; если нет — тащим ipk с HTML релиза на GitHub
+ opkg install luci-app-xray 2>/dev/null || true
+ if ! opkg list-installed | grep -q '^luci-app-xray'; then
+   warn "luci-app-xray не найден в фидах — пробую скачать ipk из Releases (без GitHub API)"
+   REL_HTML="$(curl -fsSL -H 'User-Agent: Mozilla/5.0' https://github.com/yichya/luci-app-xray/releases/latest || true)"
+   ASSET_PATH="$(printf '%s' "$REL_HTML" \
+     | sed -n 's#.*href="\(/yichya/luci-app-xray/releases/download/[^"]*luci-app-xray_.*_all\.ipk\)".*#\1#p' \
+     | head -n1)"
+   if [ -n "$ASSET_PATH" ]; then
+     wget -O /tmp/luci-app-xray.ipk "https://github.com${ASSET_PATH}" || true
+     opkg install /tmp/luci-app-xray.ipk 2>/dev/null || true
+   else
+     warn "Не смог извлечь ссылку на ipk из HTML Releases — открой Releases вручную и установи ipk через opkg."
+   fi
+ fi
 # VPN
 opkg install openvpn-openssl easy-rsa
 # nft+tproxy
