@@ -189,4 +189,167 @@ After running the script you get:
 
 ---
 
+## ⚠️ Installation ⚠️
+
+### Prerequisites
+
+> - A fresh **OpenWrt 24.10.4 x86_64** VPS  
+> - Tested reference image: `generic-ext4-combined-efi.img.gz`  
+> - Root SSH access (or at least provider console access to start with)
+
+---
+
+### 1. Connect to the VPS
+
+Use your provider’s console or SSH.
+
+If SSH is not yet available, use the VPS provider’s **Recovery/Console** access.
+
+Once you have a shell on the VPS, configure the `lan` interface to use DHCP so the system can obtain network connectivity:
+
+    uci set network.lan.proto='dhcp'
+    uci commit network
+    ifup lan
+
+After a few seconds the VPS should obtain an IP address from the provider and have internet connectivity.
+
+---
+
+### 2. Set the root password
+
+For security and for LuCI login later:
+
+    passwd
+
+Enter a strong password twice.  
+This password will also be used for **LuCI** (`root` user).
+
+---
+
+### 3. Reconnect by SSH
+
+If you were using the recovery console, now reconnect via SSH using the new password:
+
+    ssh root@YOUR_VPS_IP
+
+Replace `YOUR_VPS_IP` with the actual public IP address of your VPS.
+
+---
+
+### 4. Update package list and install tools
+
+Update `opkg` and install `curl` (we’ll use it to download the script):
+
+    opkg update
+    opkg install curl
+
+`wget` is usually present by default; if not, you can also run:
+
+    opkg install wget
+
+---
+
+### 5. Download and run the AntiDetect Router script
+
+Download the script into `/root` using the **raw** GitHub URL (not the `blob` page), make it executable and run it:
+
+    cd /root
+
+    wget -O antidetectrouter.sh \
+      https://raw.githubusercontent.com/vektort13/AntidetectRouter/main/AntidetectRouter.sh
+
+    chmod +x /root/antidetectrouter.sh
+    sh /root/antidetectrouter.sh
+
+💡 Make sure you run this as **root**.
+
+---
+
+### 6. Answer script prompts
+
+During the first run, the script will ask you a few questions:
+
+#### OpenVPN port (UDP)
+
+Prompt:
+
+    OpenVPN port (UDP) [1194]:
+
+You can usually keep `1194`, or enter any other UDP port that is open on your VPS firewall/provider.
+
+#### Client name (ovpn file)
+
+Prompt:
+
+    Client name (ovpn file) [client1]:
+
+This name will be used for the generated profile, e.g.:
+
+    /root/client1.ovpn
+
+You can set something like `laptop`, `phone`, `home-pc`, etc.
+
+#### VPN IPv4 subnet
+
+Prompt:
+
+    VPN IPv4 subnet [10.99.0.0/24]:
+
+Internal IPv4 network for road‑warrior clients.
+
+- Default `10.99.0.0/24` is fine in most cases.
+- Make sure it does **not overlap** with networks on your local devices (e.g. home `192.168.x.x`).
+
+#### VPN IPv6 subnet
+
+Prompt:
+
+    VPN IPv6 subnet [fd42:4242:4242:1::/64]:
+
+Internal IPv6 network for road‑warrior clients.
+
+- You can keep the default ULA prefix.
+- IPv6 routing will only work correctly if your VPS provider properly supports IPv6 for your image.
+
+---
+
+### 7. What the script does next
+
+After you answer these prompts, the script will:
+
+- install all required packages:
+  - **LuCI**
+  - **OpenVPN**
+  - **Passwall**
+  - **xray-core / sing-box**
+  - **dnsmasq-full**
+  - LuCI language packs, etc.
+- set up the **road‑warrior OpenVPN server** on `tun0`,
+- configure **nftables NAT + policy‑based routing (PBR)**,
+- wire the **DNS logic**:
+  - router DNS follows the active outbound VPN,
+  - clients use the VPN server itself as DNS,
+- generate a client profile at:
+
+      /root/<client>.ovpn
+
+- publish it via HTTPS at:
+
+      https://YOUR_VPS_IP/vpn/
+
+- show final connection details and a quick rescue command:
+
+      /usr/sbin/rw-fix
+
+You can then:
+
+1. Download `<client>.ovpn` from `https://YOUR_VPS_IP/vpn/`  
+2. Import it into your OpenVPN client  
+3. Log into LuCI at `https://YOUR_VPS_IP` using:
+
+       username: root
+       password: <the password you set with passwd or via the script>
+
+
+
 This is the **alpha** foundation of AntiDetect Router: a scripted, reproducible OpenWrt setup that glues together OpenVPN, advanced DNS behaviour, nftables‑based PBR, and Passwall/Xray/sing‑box into a single VPS‑ready router.
