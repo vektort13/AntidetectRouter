@@ -1,0 +1,148 @@
+🐸 QUICK START 🐸
+
+FIRST OF ALL YOU MUST WATCH:
+https://youtu.be/pSNJ8zQU2sM?si=YoBoIlPYaPfG0TvW
+
+## 📦 PACKAGES (MINIMUM)
+
+opkg update
+opkg install unbound-daemon unbound-control unbound-host curl
+opkg install ipset kmod-nft-tproxy kmod-nft-socket iptables-mod-tproxy kmod-ipt-tproxy iptables-mod-ipopt tcpdump openssh-sftp-server
+
+
+## 📥 INSTALLATION
+
+### 1. Upload files to /root/ using SFTP server (Bitvise):
+
+dual-vpn-switcher.sh (16 KB) - Main controller. Automatically switches between Passwall and OpenVPN, manages fw4, starts monitors.
+start-all.sh (5 KB) - Startup script. Launches RW server and all monitors. Adds autostart to rc.local.
+upstream-monitor.sh (5 KB) - Monitors tun1 (OpenVPN upstream). Automatically runs rw-fix when OpenVPN connects.
+universal-client-monitor.sh (4 KB) - SSH/LuCI protection. Automatically adds /32 routes for clients to prevent access loss.
+vpn-dns-monitor.sh (6 KB) - DNS management. Automatically configures dnsmasq with upstream VPN DNS.
+mega-snapshot.sh (16 KB) - Diagnostics. Collects all system info (routes, rules, configs) for troubleshooting.
+Usage example:   sh /root/mega-snapshot.sh popka  download via SFTP -> snapshots ->  archive to ZIP ->  share
+
+### 2. Upload rw-fix to /usr/sbin/
+
+rw-fix (7 KB)
+
+
+### 3. Set permissions
+
+chmod +x /root/*.sh
+chmod +x /usr/sbin/rw-fix
+
+
+### 4. Configure RW via LuCI (auto-configured in 99% cases)
+
+Services → OpenVPN → rw 
+- dev: tun0
+- enabled: ✓
+
+
+### 5. Launch
+
+Enable autostart:
+
+sh /root/start-all.sh install
+
+
+Verify installation:
+
+cat /etc/rc.local
+
+
+Should contain:
+
+sleep 10
+/root/start-all.sh &
+exit 0
+
+
+Start now:
+
+/root/start-all.sh
+
+Type:
+reboot -> enter
+
+
+After reboot, everything will start automatically.
+
+
+
+## ❓ FAQ - TROUBLESHOOTING
+
+
+
+### ❌ RW won't start
+
+uci set openvpn.rw.enabled='1'
+uci set openvpn.rw.dev='tun0'
+uci commit openvpn
+/etc/init.d/openvpn start rw
+
+
+### ❌ Passwall won't connect
+
+# Disable fw4
+/etc/init.d/firewall stop
+/etc/init.d/firewall disable
+
+# Restart Passwall
+/etc/init.d/passwall restart
+
+### ❌ OpenVPN not detected
+
+# Check tun1
+ip link show tun1
+
+# If not present - start OpenVPN
+/etc/init.d/openvpn start your_config.ovpn
+
+
+### ❌ SSH/LuCI lost access
+
+# universal-client-monitor will automatically add route
+# If not - add manually:
+ip route add <your_IP>/32 via your_gateway dev br-lan metric 10
+
+
+### ❌ Script not switching modes
+
+# Check logs
+tail -f /tmp/dual-vpn-switcher.log
+
+# Restart
+killall dual-vpn-switcher.sh
+/root/dual-vpn-switcher.sh &
+
+
+### ❌ Passwall enabled but script doesn't see it
+
+# Check Main switch
+uci get passwall.@global[0].enabled
+# Should be: 1
+
+# Check process
+ps | grep xray
+
+# If no process - restart
+/etc/init.d/passwall restart
+
+
+
+
+
+## 📝 LOGS
+
+tail -f /tmp/dual-vpn-switcher.log  # Main
+tail -f /tmp/upstream-monitor.log   # tun1 monitor
+tail -f /tmp/universal-client-monitor.log  # SSH/LuCI
+tail -f /tmp/vpn-dns-monitor.log    # DNS
+
+
+
+
+🐸 **If something breaks, run: ** sh /root/mega-snapshot.sh [anyname] ** and share the output https://t.me/Shatzki_alone 
+🐸
