@@ -300,7 +300,7 @@ say "=== Root password (also for LuCI) ==="
 if [ -z "${ROOT_PW:-}" ]; then
   TTY=/dev/tty
   if [ -r "$TTY" ]; then
-    printf "Enter root password (Enter = keep current / set 12345 if empty): " >"$TTY"
+    printf "Enter root password (Enter = keep current / set 12345 or VPS password if empty): " >"$TTY"
     stty -echo <"$TTY" 2>/dev/null || true
     IFS= read -r ROOT_PW <"$TTY" || ROOT_PW=""
     stty echo <"$TTY" 2>/dev/null || true
