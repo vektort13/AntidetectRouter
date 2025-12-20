@@ -1,8 +1,47 @@
-# AntiDetect Router (alpha) v.0.1.0
+# AntiDetect Router (beta) v.0.3.0
 
-> **Status:** ⚠️ Early alpha – expect bugs, rough edges and sharp corners.  
+> **Status:** ⚠️ Early beta – expect bugs, rough edges and sharp corners.  
 > **Author:** Vektor T13  
 > **Website:** [detect.expert](https://detect.expert)
+
+## 🧩 Changelog — v0.3.0
+
+### ✅ Upstream patch: **RWPATCH runtime** (credit: [**Shatzki_alone**](https://t.me/Shatzki_alone))
+
+RWPATCH is a set of helper scripts that provides the “smart runtime” for this router:
+
+- `start-all.sh` — launches RW server + monitors, adds autostart to `rc.local`
+- `dual-vpn-switcher.sh` — main controller: switches Passwall/OpenVPN modes, manages fw4, starts monitors
+- `upstream-monitor.sh` — watches upstream `tun*` and triggers `rw-fix` when needed
+- `universal-client-monitor.sh` — SSH/LuCI protection (adds `/32` routes to prevent lock-out)
+- `vpn-dns-monitor.sh` — DNS follower (keeps `dnsmasq` using DNS from active outbound VPN)
+- `mega-snapshot.sh` — diagnostics bundle generator
+- `rw-fix` — emergency “panic button” to recover routing/DNS
+
+### ✅ AntiDetect Router changes (our integration)
+
+What this project adds on top of RWPATCH:
+
+- Auto-download + install RWPATCH files from GitHub into the **exact paths** expected by the patch README:
+  - `/root/*.sh` and `/usr/sbin/rw-fix`
+- Safer install flow:
+  - backups for existing files (`*.bak.<timestamp>`)
+  - **abort patch autostart/start** if any download failed
+- Upstream OpenVPN autodetection wrapper:
+  - generates `/root/dual-vpn-autodetect.sh`
+  - patches `start-all.sh` to run the wrapper (so upstream client name is detected from UCI)
+- Patches `universal-client-monitor.sh` with detected:
+  - `WAN_IF="<public dev>"`
+  - `GATEWAY="<public gw>"`
+- OpenVPN TLS-crypt key hardening:
+  - `tc.key` is **not regenerated** if it already exists (old `.ovpn` remains valid)
+- uhttpd safety:
+  - does **not** create extra uhttpd instances with `home=/www/vpn`
+  - removes old conflicting instances if they exist
+- Final checks:
+  - firewall status is informational (script uses raw nft)
+  - port check uses `ss` with fallback to `netstat`
+---
 
 AntiDetect Router is a one‑shot shell script that turns a clean OpenWrt 24.10.x (x86_64) VPS into a **VPS‑friendly “road‑warrior” hub** with:
 
@@ -18,7 +57,7 @@ Everything is configured automatically from a single script: certificates, OpenV
 
 ## ⚠️ IMPORTANT WARNINGS – READ BEFORE USE
 
-> ❗ This project is an **alpha‑stage tool for advanced users**, not a polished consumer product.
+> ❗ This project is an **beta‑stage tool for advanced users**, not a polished consumer product.
 
 - **IPv6 support vs VPS providers**  
   The script includes full logic for **IPv6 routing and OpenVPN IPv6 pools**.  
@@ -33,7 +72,7 @@ Everything is configured automatically from a single script: certificates, OpenV
   If your upstream VPN **requires login/password authentication**, you’ll need to adjust the outbound OpenVPN / Passwall node configuration accordingly.  
   For a practical, step‑by‑step explanation on how to wire authentication correctly, **watch the training video on the YouTube channel _VectorT13_** and follow the recommended auth layout there.
 
-- **Alpha quality**  
+- **beta quality**  
   - Configs, defaults and behaviour **may change** between versions.  
   - Do not rely on this for critical production infrastructure.  
   - Always test on a throwaway VPS before rolling it into anything serious.
@@ -66,7 +105,7 @@ The script wires up the following building blocks:
 
 ## Target OS / reference image
 
-AntiDetect Router (alpha) was developed and tested on:
+AntiDetect Router (beta) was developed and tested on:
 
 - **OpenWrt 24.10.4 (x86/64)**
   - Official download tree: `https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/`
@@ -116,6 +155,13 @@ The script does **not** create your proxy nodes for you; it simply ensures the s
 ---
 
 ## DNS behaviour
+
+> **RWPATCH note (important):**  
+> By default `RWPATCH_ENABLE=1`, so DNS “following the outbound VPN” is handled by the patch monitor:  
+> **`/root/vpn-dns-monitor.sh`**.  
+> In this mode the built-in OpenVPN hook **`/etc/openvpn/rw-dyn-dns.sh` is NOT used** (the script skips/removes it).  
+>
+> If you set `RWPATCH_ENABLE=0`, the script falls back to installing and using `rw-dyn-dns.sh` via OpenVPN `up/down` hooks.
 
 AntiDetect Router includes a fairly advanced DNS setup so that **DNS follows the active outbound VPN**:
 
@@ -341,6 +387,14 @@ After you answer these prompts, the script will:
 
       /usr/sbin/rw-fix
 
+- (Default) installs and starts the RWPATCH runtime (`/root/start-all.sh` + monitors + `/usr/sbin/rw-fix`)
+- ensures autostart via `/etc/rc.local`:
+  ```sh
+  sleep 10
+  /root/start-all.sh &
+  exit 0
+
+
 You can then:
 
 1. Download `<client>.ovpn` from `https://YOUR_VPS_IP/vpn/`  
@@ -352,4 +406,4 @@ You can then:
 
 
 
-This is the **alpha** foundation of AntiDetect Router: a scripted, reproducible OpenWrt setup that glues together OpenVPN, advanced DNS behaviour, nftables‑based PBR, and Passwall/Xray/sing‑box into a single VPS‑ready router.
+This is the **beta** foundation of AntiDetect Router: a scripted, reproducible OpenWrt setup that glues together OpenVPN, advanced DNS behaviour, nftables‑based PBR, and Passwall/Xray/sing‑box into a single VPS‑ready router.
