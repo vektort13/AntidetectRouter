@@ -35,6 +35,32 @@ EOF
 check_interface() { ip link show "$1" >/dev/null 2>&1; }
 have_bin() { command -v "$1" >/dev/null 2>&1; }
 
+# --------- OpenVPN restart helpers (avoid restarting all instances) ----------
+openvpn_restart_instance() {
+  # Usage: openvpn_restart_instance rw
+  local inst="${1:-}"
+  if [ -n "$inst" ]; then
+    /etc/init.d/openvpn restart "$inst" >/dev/null 2>&1 || \
+    /etc/init.d/openvpn start   "$inst" >/dev/null 2>&1 || true
+  else
+    /etc/init.d/openvpn restart >/dev/null 2>&1 || \
+    /etc/init.d/openvpn start   >/dev/null 2>&1 || true
+  fi
+}
+
+openvpn_restart_clients() {
+  # Restart enabled OpenVPN client instances (UCI sections with option client '1'), excluding 'rw'
+  local s en
+  for s in $(uci show openvpn 2>/dev/null | sed -n 's/^openvpn\.\([^.]*\)=openvpn.*/\1/p'); do
+    [ "$s" = "rw" ] && continue
+    [ "$(uci -q get openvpn.$s.client || echo 0)" = "1" ] || continue
+    en="$(uci -q get openvpn.$s.enabled 2>/dev/null || echo 1)"
+    [ "$en" = "0" ] && continue
+    /etc/init.d/openvpn restart "$s" >/dev/null 2>&1 || \
+    /etc/init.d/openvpn start   "$s" >/dev/null 2>&1 || true
+  done
+}
+
 say "=== Road-Warrior Auto Setup (VPS‑friendly) — unified ==="
 say "Checking basic parameters..."
 
@@ -69,6 +95,195 @@ for p in ca-bundle curl wget jq ip-full iptables-nft nftables nftables-json ipta
          openvpn-openssl kmod-tun openvpn-easy-rsa unzip nano; do
   install_pkg "$p"
 done
+
+# ============================================================
+# RWPATCH BOOTSTRAP: download & install extra scripts from GitHub
+# ============================================================
+
+# 1 = download/install/start up/launch
+# 0 = fully bypass rwpatch
+RWPATCH_ENABLE="${RWPATCH_ENABLE:-1}"
+
+RWPATCH_REPO="vektort13/AntidetectRouter"
+RWPATCH_REF="${RWPATCH_REF:-b046f39b12ce6bbab92299327799d9c7bfbd0ba3}"
+RWPATCH_BASE="https://raw.githubusercontent.com/${RWPATCH_REPO}/${RWPATCH_REF}"
+
+rwpatch_backup() {
+  # /path/file -> /path/file.bak.YYYYmmdd-HHMMSS
+  local f="$1" ts
+  [ -f "$f" ] || return 0
+  ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo now)"
+  cp -f "$f" "${f}.bak.${ts}" 2>/dev/null || true
+}
+
+rwpatch_fetch() {
+  # rwpatch_fetch <url> <dest_path>
+  local url="$1" dest="$2" tmp dir
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir" 2>/dev/null || true
+
+  tmp="$(mktemp -p /tmp rwpatch.XXXXXX 2>/dev/null)" || tmp="/tmp/rwpatch.$$"
+  rm -f "$tmp" 2>/dev/null || true
+
+  if command -v uclient-fetch >/dev/null 2>&1; then
+    uclient-fetch -q -T 30 -O "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 10 --max-time 60 -o "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  else
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+
+  [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+  sed -i 's/\r$//' "$tmp" 2>/dev/null || true
+
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+rwpatch_install_files() {
+  [ "${RWPATCH_ENABLE:-0}" = "1" ] || { warn "rwpatch: disabled (RWPATCH_ENABLE=0)"; return 0; }
+
+  say "=== RWPATCH: installing helper scripts from GitHub ==="
+  say "Repo: ${RWPATCH_REPO}"
+  say "Ref : ${RWPATCH_REF}"
+
+  for p in unbound-daemon unbound-control unbound-host \
+           ipset kmod-nft-tproxy kmod-nft-socket \
+           iptables-mod-tproxy kmod-ipt-tproxy iptables-mod-ipopt \
+           tcpdump openssh-sftp-server; do
+    install_pkg "$p"
+  done
+
+  # --- backups ---
+  rwpatch_backup "/root/start-all.sh"
+  rwpatch_backup "/root/dual-vpn-switcher.sh"
+  rwpatch_backup "/root/upstream-monitor.sh"
+  rwpatch_backup "/root/universal-client-monitor.sh"
+  rwpatch_backup "/root/vpn-dns-monitor.sh"
+  rwpatch_backup "/root/mega-snapshot.sh"
+  rwpatch_backup "/usr/sbin/rw-fix"
+
+  local fail=0
+
+  # --- scripts -> /root ---
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/scripts/start-all.sh"                "/root/start-all.sh"                || { err "rwpatch: failed to fetch start-all.sh"; fail=1; }
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/scripts/dual-vpn-switcher.sh"        "/root/dual-vpn-switcher.sh"        || { err "rwpatch: failed to fetch dual-vpn-switcher.sh"; fail=1; }
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/scripts/upstream-monitor.sh"         "/root/upstream-monitor.sh"         || { err "rwpatch: failed to fetch upstream-monitor.sh"; fail=1; }
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/scripts/universal-client-monitor.sh" "/root/universal-client-monitor.sh" || { err "rwpatch: failed to fetch universal-client-monitor.sh"; fail=1; }
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/scripts/vpn-dns-monitor.sh"          "/root/vpn-dns-monitor.sh"          || { err "rwpatch: failed to fetch vpn-dns-monitor.sh"; fail=1; }
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/scripts/mega-snapshot.sh"            "/root/mega-snapshot.sh"            || { err "rwpatch: failed to fetch mega-snapshot.sh"; fail=1; }
+
+  # --- rw-fix -> /usr/sbin ---
+  rwpatch_fetch "${RWPATCH_BASE}/rwpatch/bin/rw-fix" "/usr/sbin/rw-fix" || { err "rwpatch: failed to fetch rw-fix"; fail=1; }
+
+  if [ "$fail" -ne 0 ]; then
+    err "rwpatch: one or more downloads failed — aborting rwpatch install (autostart/start will be skipped)."
+    return 1
+  fi
+
+  chmod +x /root/start-all.sh \
+           /root/dual-vpn-switcher.sh \
+           /root/upstream-monitor.sh \
+           /root/universal-client-monitor.sh \
+           /root/vpn-dns-monitor.sh \
+           /root/mega-snapshot.sh \
+           /usr/sbin/rw-fix 2>/dev/null || true
+
+  # -----------------------------
+  # Post-install fixes (IMPORTANT)
+  # -----------------------------
+
+  # 1) Create wrapper that autodetects upstream OpenVPN instance from UCI
+  cat >/root/dual-vpn-autodetect.sh <<'EOF_WRAPPER'
+#!/bin/sh
+
+detect_upstream() {
+  # Prefer first enabled OpenVPN client section != rw
+  for s in $(uci show openvpn 2>/dev/null | sed -n 's/^openvpn\.\([^.]*\)=openvpn.*/\1/p'); do
+    [ "$s" = "rw" ] && continue
+    [ "$(uci -q get openvpn.$s.client || echo 0)" = "1" ] || continue
+    en="$(uci -q get openvpn.$s.enabled || echo 1)"
+    [ "$en" = "0" ] && continue
+    echo "$s"
+    return 0
+  done
+  return 1
+}
+
+UP="$(detect_upstream || true)"
+
+# If found: pass as BOTH args (config name + upstream log name)
+if [ -n "$UP" ]; then
+  exec /root/dual-vpn-switcher.sh "$UP" "$UP"
+else
+  # fallback to original defaults inside dual-vpn-switcher.sh
+  exec /root/dual-vpn-switcher.sh
+fi
+EOF_WRAPPER
+  chmod +x /root/dual-vpn-autodetect.sh
+
+  # 2) Patch start-all.sh to run wrapper instead of raw dual-vpn-switcher.sh
+  if [ -f /root/start-all.sh ]; then
+    sed -i 's|/root/dual-vpn-switcher.sh &|/root/dual-vpn-autodetect.sh &|g' /root/start-all.sh 2>/dev/null || true
+  fi
+
+  say "✓ rwpatch installed"
+
+  # 3) Patch universal-client-monitor: set correct WAN_IF + GATEWAY
+  if [ -f /root/universal-client-monitor.sh ]; then
+    sed -i "s|^WAN_IF=.*|WAN_IF=\"${PUB_DEV}\"|g" /root/universal-client-monitor.sh 2>/dev/null || true
+    if [ -n "${PUB_GW:-}" ]; then
+      sed -i "s|^GATEWAY=.*|GATEWAY=\"${PUB_GW}\"|g" /root/universal-client-monitor.sh 2>/dev/null || true
+    fi
+  fi
+
+  return 0
+}
+
+rwpatch_enable_autostart() {
+  [ "${RWPATCH_ENABLE:-0}" = "1" ] || return 0
+
+  # 1) Will try legal way by start-all.sh install
+  /root/start-all.sh install >/dev/null 2>&1 || true
+
+  # 2) Just for guarantee /etc/rc.local
+  local rc="/etc/rc.local" tmp
+  [ -f "$rc" ] || { printf "%s\n\nexit 0\n" "#!/bin/sh" > "$rc"; }
+  if ! grep -q "/root/start-all.sh" "$rc" 2>/dev/null; then
+    tmp="$(mktemp -p /tmp rc.local.XXXXXX 2>/dev/null)" || tmp="/tmp/rc.local.$$"
+    awk '
+      BEGIN{added=0}
+      $0 ~ /^exit 0$/ && added==0 {
+        print "sleep 10"
+        print "/root/start-all.sh &"
+        print ""
+        added=1
+      }
+      {print}
+    ' "$rc" > "$tmp" && mv -f "$tmp" "$rc"
+  fi
+  chmod +x "$rc" 2>/dev/null || true
+
+  say "✓ Autostart ensured in /etc/rc.local"
+}
+
+rwpatch_start_now() {
+  [ "${RWPATCH_ENABLE:-0}" = "1" ] || return 0
+
+  say "=== Starting rwpatch runtime ==="
+  # start-all will launch all monitors
+  /root/start-all.sh >/dev/null 2>&1 &
+
+  say "✓ rwpatch started (background)"
+  say "Logs:"
+  say "  tail -f /tmp/dual-vpn-switcher.log"
+  say "  tail -f /tmp/upstream-monitor.log"
+  say "  tail -f /tmp/universal-client-monitor.log"
+  say "  tail -f /tmp/vpn-dns-monitor.log"
+}
 
 # language packs for LuCI
 for p in luci-i18n-base-ru luci-i18n-openvpn-ru luci-i18n-firewall-ru \
@@ -194,14 +409,18 @@ EOF_OCNF
     -CAcreateserial -out "$OVPN_PKI/$CLIENT.crt" -days 3650 -extensions client -extfile "$OVPN_PKI/openssl.cnf"
   say "✓ Client certificate created"
 }
-openvpn --genkey secret "$OVPN_PKI/tc.key" 2>/dev/null && say "✓ TLS-crypt key generated"
+if [ ! -f "$OVPN_PKI/tc.key" ]; then
+  openvpn --genkey secret "$OVPN_PKI/tc.key" 2>/dev/null && say "✓ TLS-crypt key generated"
+else
+  say "✓ TLS-crypt key already exists: $OVPN_PKI/tc.key"
+fi
 
 OVPN4="${VPN4_NET%/*}"; MASK4="$(cidr2mask "$VPN4_NET")"
 
 uci -q delete openvpn.rw
 uci set openvpn.rw=openvpn
 uci set openvpn.rw.enabled='1'
-uci set openvpn.rw.dev='tun'
+uci set openvpn.rw.dev='tun0'
 uci set openvpn.rw.proto='udp'
 uci set openvpn.rw.port="$OPORT"
 uci set openvpn.rw.topology='subnet'
@@ -234,9 +453,12 @@ EOF
   MSK_INT=$(ip2int "$RW_MASK")
   SRV_DNS="$(int2ip $(( (NET_INT & MSK_INT) + 1 )) )"
 fi
-for v in $(uci -q show openvpn.rw | sed -n "s/^openvpn\.rw\.push='\(.*\)'/\1/p" | grep -i '^dhcp-option DNS '); do
-  uci -q del_list openvpn.rw.push="$v"
-done
+uci -q show openvpn.rw 2>/dev/null | \
+  sed -n "s/^openvpn\.rw\.push='\(.*\)'/\1/p" | \
+  grep -i '^dhcp-option DNS ' | \
+  while IFS= read -r v; do
+    [ -n "$v" ] && uci -q del_list openvpn.rw.push="$v"
+  done
 
 uci add_list openvpn.rw.push="dhcp-option DNS $SRV_DNS"
 uci add_list openvpn.rw.push='block-outside-dns'
@@ -246,7 +468,7 @@ uci set openvpn.rw.log='/tmp/openvpn.log'
 uci set openvpn.rw.verb='3'
 uci commit openvpn
 /etc/init.d/openvpn enable
-/etc/init.d/openvpn restart
+openvpn_restart_instance rw
 say "✓ OpenVPN server started"
 
 # --------- Hardening OpenVPN clients ----------
@@ -275,7 +497,8 @@ ip -6 route del ::/1      dev tun+ 2>/dev/null || true
 ip -6 route del 2000::/3  dev tun+ 2>/dev/null || true
 
 # --------- Rescue button ----------
-cat >/usr/sbin/rw-fix <<'EOF_FIX'
+if [ "${RWPATCH_ENABLE:-0}" != "1" ]; then
+  cat >/usr/sbin/rw-fix <<'EOF_FIX'
 #!/bin/sh
 printf "\033[1;32m[rw-fix]\033[0m %s\n" "Cleaning hijacked default routes and restarting services..."
 ip route del 0.0.0.0/1  dev tun+ 2>/dev/null
@@ -288,7 +511,10 @@ ip -6 route del default   dev tun+ 2>/dev/null
 /etc/init.d/openvpn  restart 2>/dev/null || true
 printf "\033[1;32m[rw-fix]\033[0m %s\n" "Done."
 EOF_FIX
-chmod +x /usr/sbin/rw-fix
+  chmod +x /usr/sbin/rw-fix
+else
+  say "RWPATCH enabled: rw-fix will be installed from GitHub (skipping inbuild)."
+fi
 
 # --------- Policy: mgmt table (SSH/LuCI pin) ----------
 say "=== Management protection (mgmt table) ==="
@@ -343,8 +569,8 @@ else
   say "PBR: no external tunX — table vpnout cleared, RW traffic goes via main"
 fi
 
-# restart OpenVPN
-/etc/init.d/openvpn restart >/dev/null 2>&1 || /etc/init.d/openvpn start >/dev/null 2>&1 || true
+# restart ONLY RW server (avoid dropping upstream clients)
+openvpn_restart_instance rw
 
 # --------- Generate .ovpn (with float) ----------
 PUB_DETECTED="$(curl -s --max-time 3 ifconfig.me || curl -s --max-time 3 ipinfo.io/ip || echo "$PUB_IP")"
@@ -418,12 +644,14 @@ cat > "/www/vpn/index.html" << EOF
 </html>
 EOF
 
-if ! grep -q "home.*/www/vpn" /etc/config/uhttpd 2>/dev/null; then
-  uci add uhttpd uhttpd
-  uci set uhttpd.@uhttpd[-1].home="/www/vpn"
-  uci set uhttpd.@uhttpd[-1].rfc1918_filter="0"
-  uci commit uhttpd
-fi
+# IMPORTANT: do NOT create extra uhttpd instances with home=/www/vpn (can conflict with LuCI ports).
+# If an old run already created such instance — remove it.
+for s in $(uci -q show uhttpd 2>/dev/null | sed -n 's/^uhttpd\.\([^.]*\)=uhttpd.*/\1/p'); do
+  if [ "$(uci -q get uhttpd.$s.home 2>/dev/null)" = "/www/vpn" ]; then
+    uci -q delete uhttpd.$s
+  fi
+done
+uci commit uhttpd 2>/dev/null || true
 
 /etc/init.d/uhttpd restart
 say "✓ Web interface configured"
@@ -445,9 +673,11 @@ uci commit dhcp
 say "✓ dnsmasq is configured to serve RW clients via tun0"
 
 # ---------- Script hook for outbound OpenVPN client ----------
-say "Installing OpenVPN DNS-hook: /etc/openvpn/rw-dyn-dns.sh"
 
-cat >/etc/openvpn/rw-dyn-dns.sh <<'EOF_HOOK'
+if [ "${RWPATCH_ENABLE:-0}" != "1" ]; then
+  say "Installing OpenVPN DNS-hook: /etc/openvpn/rw-dyn-dns.sh"
+
+  cat >/etc/openvpn/rw-dyn-dns.sh <<'EOF_HOOK'
 #!/bin/sh
 # rw-dyn-dns.sh
 # OpenVPN client up/down hook to switch upstream DNS for dnsmasq:
@@ -503,23 +733,34 @@ esac
 exit 0
 EOF_HOOK
 
-chmod +x /etc/openvpn/rw-dyn-dns.sh
+  chmod +x /etc/openvpn/rw-dyn-dns.sh
 
-# ---------- Add hook to all /etc/openvpn/*.ovpn (outbound clients) ----------
-say "Registering hook in /etc/openvpn/*.ovpn (if present)..."
+  # ---------- Add hook to all /etc/openvpn/*.ovpn (outbound clients) ----------
+  say "Registering hook in /etc/openvpn/*.ovpn (if present)..."
 
-for f in /etc/openvpn/*.ovpn; do
-  [ -f "$f" ] || continue
-  say "  updating $f"
-  grep -q '^script-security 2' "$f"                   || echo 'script-security 2' >>"$f"
-  grep -q '^up /etc/openvpn/rw-dyn-dns.sh' "$f"       || echo 'up /etc/openvpn/rw-dyn-dns.sh' >>"$f"
-  grep -q '^down /etc/openvpn/rw-dyn-dns.sh' "$f"     || echo 'down /etc/openvpn/rw-dyn-dns.sh' >>"$f"
-  grep -q 'pull-filter accept "dhcp-option"' "$f"     || echo 'pull-filter accept "dhcp-option"' >>"$f"
-done
+  for f in /etc/openvpn/*.ovpn; do
+    [ -f "$f" ] || continue
+    say "  updating $f"
+    grep -q '^script-security 2' "$f"                   || echo 'script-security 2' >>"$f"
+    grep -q '^up /etc/openvpn/rw-dyn-dns.sh' "$f"       || echo 'up /etc/openvpn/rw-dyn-dns.sh' >>"$f"
+    grep -q '^down /etc/openvpn/rw-dyn-dns.sh' "$f"     || echo 'down /etc/openvpn/rw-dyn-dns.sh' >>"$f"
+    grep -q 'pull-filter accept "dhcp-option"' "$f"     || echo 'pull-filter accept "dhcp-option"' >>"$f"
+  done
 
-# Restart OpenVPN to load hook and updated DNS push
-/etc/init.d/openvpn restart || true
-say "✓ RW DNS + automatic use of outbound VPN DNS is configured"
+  # Restart OpenVPN to load hook and updated DNS behavior
+  openvpn_restart_clients
+  say "✓ RW DNS + automatic use of outbound VPN DNS is configured"
+
+else
+  say "RWPATCH enabled: skipping rw-dyn-dns hook (DNS will be handled by vpn-dns-monitor.sh)."
+  rm -f /etc/openvpn/rw-dyn-dns.sh 2>/dev/null || true
+
+  for f in /etc/openvpn/*.ovpn; do
+    [ -f "$f" ] || continue
+    sed -i '\|^up /etc/openvpn/rw-dyn-dns.sh$|d' "$f" 2>/dev/null || true
+    sed -i '\|^down /etc/openvpn/rw-dyn-dns.sh$|d' "$f" 2>/dev/null || true
+  done
+fi
 
 # ---------- Final checks ----------
 say "=== Running final checks ==="
@@ -535,20 +776,45 @@ check_service() {
 }
 check_service "openvpn"
 check_service "uhttpd"
-check_service "firewall"
+# firewall is stopped by this script (raw-nft mode); do not treat it as a failure here
+if /etc/init.d/firewall status >/dev/null 2>&1; then
+  warn "⚠ firewall is running"
+else
+  say "✓ firewall is stopped"
+fi
 
 check_interface "tun0" || warn "Interface tun0 not created yet (it will be created when a client connects)"
 
-if netstat -tulpn 2>/dev/null | grep -q ":$OPORT"; then
-  say "✓ Port $OPORT is listening"
+if have_bin ss; then
+  if ss -u -lpn 2>/dev/null | grep -qE "[:.]${OPORT}([[:space:]]|$)"; then
+    say "✓ Port $OPORT is listening"
+  else
+    warn "✗ Port $OPORT is not listening"
+  fi
+elif have_bin netstat; then
+  if netstat -tulpn 2>/dev/null | grep -q ":$OPORT"; then
+    say "✓ Port $OPORT is listening"
+  else
+    warn "✗ Port $OPORT is not listening"
+  fi
 else
-  warn "✗ Port $OPORT is not listening"
+  warn "✗ Cannot check port $OPORT (no ss/netstat)"
 fi
 
 if [ -f "/www/vpn/${CLIENT}.ovpn" ]; then
   say "✓ OVPN file available at https://$PUB_IP/vpn/"
 else
   warn "✗ OVPN file not created in web directory"
+fi
+
+# ============================================================
+# RWPATCH: download + install + autostart + start now
+# ============================================================
+if rwpatch_install_files; then
+  rwpatch_enable_autostart
+  rwpatch_start_now
+else
+  warn "RWPATCH installation failed — skipping autostart/runtime launch"
 fi
 
 # ---------- Final information ----------
