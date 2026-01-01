@@ -1,10 +1,10 @@
 #!/bin/sh
-# Dual VPN Switcher v0.1 - UCI Enabled Check
+# Dual VPN Switcher v NASTOIASHAYA JABA - DNS Leak Protection Edition
 # Manages: fw4, nftables, routing, monitors, DNS
 # Usage: /root/dual-vpn-switcher.sh &
 
 LOG="/tmp/dual-vpn-switcher.log"
-CHECK_INTERVAL=5
+CHECK_INTERVAL=2  # 
 CURRENT_MODE="none"
 PASSWALL_FIRST_RUN=1
 LOOP_COUNT=0
@@ -12,6 +12,629 @@ RW_DOWN_COUNTER=0  # Track how long RW has been down
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"
+}
+
+# ==================== KILL SWITCH ====================
+# Block RW client traffic when no VPN is active
+
+KILL_SWITCH_ENABLED=1  # Set to 0 to disable
+
+# Apply kill switch rules
+apply_kill_switch() {
+    if [ "$KILL_SWITCH_ENABLED" != "1" ]; then
+        return 0
+    fi
+    
+    log "⛔ Kill Switch: Blocking RW client traffic (no VPN active)"
+    
+    # Get RW interface
+    local rw_iface=$(ip link show | grep -E '^[0-9]+: rw' | awk -F: '{print $2}' | tr -d ' ' | head -1)
+    
+    if [ -z "$rw_iface" ]; then
+        log "⚠️  Kill Switch: RW interface not found, skipping"
+        return 0
+    fi
+    
+    # Block forwarding FROM rw interface (clients can't access internet)
+    # But allow:
+    # - Local network access (192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12)
+    # - DNS to router (port 53)
+    # - DHCP (port 67-68)
+    
+    # Create kill switch chain if not exists
+    nft add chain inet fw4 kill_switch_rw { type filter hook forward priority 0 \; } 2>/dev/null || true
+    
+    # Flush existing rules
+    nft flush chain inet fw4 kill_switch_rw 2>/dev/null || true
+    
+    # Add rules: block all forwarding from RW except local networks
+    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" ip daddr 192.168.0.0/16 accept
+    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" ip daddr 10.0.0.0/8 accept
+    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" ip daddr 172.16.0.0/12 accept
+    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" drop
+    
+    log "✓ Kill Switch: RW clients blocked from internet (local network allowed)"
+}
+
+# Remove kill switch rules
+remove_kill_switch() {
+    if [ "$KILL_SWITCH_ENABLED" != "1" ]; then
+        return 0
+    fi
+    
+    log "✅ Kill Switch: Allowing RW client traffic (VPN active)"
+    
+    # Delete kill switch chain
+    nft delete chain inet fw4 kill_switch_rw 2>/dev/null || true
+    
+    log "✓ Kill Switch: RW clients unblocked"
+}
+
+
+# ==================== ENHANCED CONNECTION STATUS DISPLAY ====================
+
+# Get SOCKS proxy IP from Passwall config
+get_socks_ip() {
+    local node=$(uci get passwall.@global[0].socks_node 2>/dev/null)
+    
+    if [ -z "$node" ]; then
+        node=$(uci get passwall.@global[0].tcp_node 2>/dev/null)
+    fi
+    
+    if [ -n "$node" ]; then
+        local server=$(uci get "passwall.$node.address" 2>/dev/null)
+        
+        if [ -n "$server" ]; then
+            if echo "$server" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                echo "$server"
+            else
+                local resolved=$(nslookup "$server" 2>/dev/null | grep "Address:" | tail -1 | awk '{print $2}')
+                if [ -n "$resolved" ]; then
+                    echo "$resolved"
+                else
+                    echo "$server"
+                fi
+            fi
+        fi
+    fi
+}
+
+# Get external IP with geolocation
+get_ip_with_geo() {
+    local response=$(curl -s --max-time 2 "https://ipinfo.io/json" 2>/dev/null)
+    
+    if [ -n "$response" ]; then
+        local ip=$(echo "$response" | grep -o '"ip"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+        local city=$(echo "$response" | grep -o '"city"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+        local region=$(echo "$response" | grep -o '"region"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+        local org=$(echo "$response" | grep -o '"org"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+        
+        if [ -n "$city" ] && [ -n "$region" ]; then
+            printf "%s (%s, %s) - %s" "$ip" "$city" "$region" "$org"
+        elif [ -n "$ip" ]; then
+            echo "$ip"
+        else
+            echo "Unknown"
+        fi
+    else
+        echo "Unknown"
+    fi
+}
+
+# Advanced ping metrics with auto SOCKS detection
+get_ping_metrics() {
+    local target=$(get_socks_ip)
+    
+    if [ -z "$target" ]; then
+        target="8.8.8.8"
+    fi
+    
+    local ping_output=$(ping -c 3 -W 1 "$target" 2>/dev/null)
+    
+    if [ -z "$ping_output" ]; then
+        echo "timeout|0|100"
+        return
+    fi
+    
+    local stats=$(echo "$ping_output" | grep "min/avg/max")
+    
+    if [ -z "$stats" ]; then
+        echo "timeout|0|100"
+        return
+    fi
+    
+    local values=$(echo "$stats" | cut -d'=' -f2 | tr -d ' ms')
+    local min=$(echo "$values" | cut -d'/' -f1)
+    local avg=$(echo "$values" | cut -d'/' -f2)
+    local max=$(echo "$values" | cut -d'/' -f3)
+    local jitter=$(awk "BEGIN {printf \"%.0f\", $max - $min}")
+    local loss=$(echo "$ping_output" | grep -o '[0-9]*% packet loss' | grep -o '[0-9]*')
+    avg=$(awk "BEGIN {printf \"%.0f\", $avg}")
+    
+    printf "%s|%s|%s" "$avg" "$jitter" "${loss:-0}"
+}
+
+# Create progress bar
+create_bar() {
+    local value=$1
+    local max=$2
+    local width=10
+    local color=$3
+    
+    local filled=$(( value * width / max ))
+    if [ $filled -gt $width ]; then
+        filled=$width
+    fi
+    
+    local bar=""
+    local i=0
+    while [ $i -lt $filled ]; do
+        bar="${bar}█"
+        i=$((i + 1))
+    done
+    while [ $i -lt $width ]; do
+        bar="${bar}░"
+        i=$((i + 1))
+    done
+    
+    printf "\033[%sm[%s]\033[0m" "$color" "$bar"
+}
+
+# Get latency color
+get_latency_color() {
+    local latency=$1
+    
+    if [ "$latency" = "timeout" ] || [ "$latency" -gt 200 ]; then
+        echo "0;31"
+    elif [ "$latency" -gt 100 ]; then
+        echo "1;33"
+    else
+        echo "0;32"
+    fi
+}
+
+# Get quality label
+get_quality_label() {
+    local latency=$1
+    
+    if [ "$latency" = "timeout" ]; then
+        echo "No Connection"
+    elif [ "$latency" -lt 30 ]; then
+        echo "Excellent"
+    elif [ "$latency" -lt 60 ]; then
+        echo "Good"
+    elif [ "$latency" -lt 100 ]; then
+        echo "Fair"
+    elif [ "$latency" -lt 200 ]; then
+        echo "Poor"
+    else
+        echo "Very Poor"
+    fi
+}
+
+# Main enhanced connection status display
+show_connection_status() {
+    local mode="${1:-Unknown}"
+    
+    log ""
+    log "=========================================="
+    log "CONNECTION STATUS"
+    log "=========================================="
+    log ""
+    
+    # Получить IP через несколько источников (fallback)
+    CURRENT_IP=""
+    
+    # Попытка 1: icanhazip.com
+    CURRENT_IP=$(curl -s --max-time 3 icanhazip.com 2>/dev/null | tr -d '\n\r ' | grep -oE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$')
+    
+    # Попытка 2: ifconfig.me
+    if [ -z "$CURRENT_IP" ]; then
+        CURRENT_IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null | tr -d '\n\r ' | grep -oE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$')
+    fi
+    
+    # Попытка 3: api.ipify.org
+    if [ -z "$CURRENT_IP" ]; then
+        CURRENT_IP=$(curl -s --max-time 3 api.ipify.org 2>/dev/null | tr -d '\n\r ' | grep -oE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$')
+    fi
+    
+    if [ -z "$CURRENT_IP" ]; then
+        log "IP: Unknown (failed to fetch)"
+    else
+        log "IP: $CURRENT_IP"
+        
+        # Получить геолокацию через ip-api.com
+        GEO_JSON=$(curl -s --max-time 4 "http://ip-api.com/json/$CURRENT_IP?fields=status,country,regionName,city,isp,as" 2>/dev/null)
+        
+        if [ -n "$GEO_JSON" ] && echo "$GEO_JSON" | grep -q '"status":"success"'; then
+            # ПРАВИЛЬНЫЙ парсинг JSON (grep + cut)
+            CITY=$(echo "$GEO_JSON" | grep -o '"city":"[^"]*"' | cut -d'"' -f4)
+            REGION=$(echo "$GEO_JSON" | grep -o '"regionName":"[^"]*"' | cut -d'"' -f4)
+            COUNTRY=$(echo "$GEO_JSON" | grep -o '"country":"[^"]*"' | cut -d'"' -f4)
+            ISP=$(echo "$GEO_JSON" | grep -o '"isp":"[^"]*"' | cut -d'"' -f4)
+            ASN=$(echo "$GEO_JSON" | grep -o '"as":"[^"]*"' | cut -d'"' -f4)
+            
+            # Формируем строку локации
+            LOCATION=""
+            [ -n "$CITY" ] && LOCATION="$CITY"
+            [ -n "$REGION" ] && LOCATION="${LOCATION:+$LOCATION, }$REGION"
+            [ -n "$COUNTRY" ] && LOCATION="${LOCATION:+$LOCATION, }$COUNTRY"
+            
+            [ -n "$LOCATION" ] && log "Location: $LOCATION"
+            [ -n "$ISP" ] && log "ISP: $ISP"
+            [ -n "$ASN" ] && log "ASN: $ASN"
+        fi
+    fi
+    
+    # Получаем IP активного прокси из Passwall (НЕ ХАРДКОД!)
+    PROXY_IP=""
+    
+    # Приоритет: SOCKS > TCP > UDP
+    local socks_node=$(uci get passwall.@global[0].socks_node 2>/dev/null)
+    if [ -n "$socks_node" ] && [ "$socks_node" != "nil" ]; then
+        PROXY_IP=$(uci get passwall.$socks_node.address 2>/dev/null)
+    fi
+    
+    if [ -z "$PROXY_IP" ]; then
+        local tcp_node=$(uci get passwall.@global[0].tcp_node 2>/dev/null)
+        if [ -n "$tcp_node" ] && [ "$tcp_node" != "nil" ]; then
+            PROXY_IP=$(uci get passwall.$tcp_node.address 2>/dev/null)
+        fi
+    fi
+    
+    if [ -z "$PROXY_IP" ]; then
+        local udp_node=$(uci get passwall.@global[0].udp_node 2>/dev/null)
+        if [ -n "$udp_node" ] && [ "$udp_node" != "nil" ]; then
+            PROXY_IP=$(uci get passwall.$udp_node.address 2>/dev/null)
+        fi
+    fi
+    
+    # Fallback на Google DNS если не нашли прокси
+    if [ -z "$PROXY_IP" ]; then
+        PROXY_IP="8.8.8.8"
+        log "⚠️  Warning: Could not find proxy IP, using Google DNS for ping"
+    fi
+    
+    # Ping test к ПРОКСИ (не к Google!)
+    PING_RESULT=$(ping -c 3 -W 2 "$PROXY_IP" 2>/dev/null)
+    
+    if [ -n "$PING_RESULT" ]; then
+        # Извлекаем среднюю латентность
+        LATENCY=$(echo "$PING_RESULT" | grep 'avg' | awk -F'/' '{print $5}')
+        
+        # Извлекаем packet loss
+        PACKETLOSS=$(echo "$PING_RESULT" | grep 'packet loss' | grep -o '[0-9]*%' | head -1)
+        
+        if [ -n "$LATENCY" ]; then
+            # Оценка качества
+            LATENCY_INT=$(echo "$LATENCY" | cut -d. -f1)
+            
+            if [ "$LATENCY_INT" -lt 50 ]; then
+                QUALITY="Excellent"
+            elif [ "$LATENCY_INT" -lt 100 ]; then
+                QUALITY="Good"
+            elif [ "$LATENCY_INT" -lt 150 ]; then
+                QUALITY="Fair"
+            else
+                QUALITY="Poor"
+            fi
+            
+            log "Latency: ${LATENCY} ($QUALITY)"
+        fi
+        
+        [ -n "$PACKETLOSS" ] && log "Packet Loss: $PACKETLOSS"
+        
+        # Jitter (опционально)
+        if [ "$mode" = "Passwall" ] || [ "$mode" = "OpenVPN" ]; then
+            PING_JITTER=$(ping -c 10 -W 2 8.8.8.8 2>/dev/null | grep 'avg' | awk -F'/' '{print $7}')
+            [ -n "$PING_JITTER" ] && log "Jitter: ${PING_JITTER}ms"
+        fi
+    fi
+    
+    log "Mode: $mode"
+    log ""
+    log "=========================================="
+    log ""
+}
+
+
+
+# ==================== PERMANENT PASSWALL DNS FIX ====================
+
+apply_permanent_passwall_dns_fix() {
+    local LUA_FILE="/usr/share/passwall/helper_chinadns_add.lua"
+    local MARKER="FORCE_DEFAULT_TAG_GFW_FINAL"
+    
+    # Check if already patched (v2)
+    if grep -q "$MARKER" "$LUA_FILE" 2>/dev/null; then
+        log "✓ Passwall DNS patch already applied (v2)"
+        return 0
+    fi
+    
+    log ""
+    log "=========================================="
+    log "APPLYING PERMANENT PASSWALL DNS FIX (v2)"
+    log "=========================================="
+    log ""
+    log "This ONE-TIME patch forces default-tag=gfw"
+    log "(All DNS queries will use proxy DNS)"
+    log ""
+    
+    # Check file exists
+    if [ ! -f "$LUA_FILE" ]; then
+        log "✗ Passwall LUA file not found: $LUA_FILE"
+        return 1
+    fi
+    
+    # Backup
+    cp "$LUA_FILE" "${LUA_FILE}.backup.v2" 2>/dev/null
+    log "✓ Backup created: ${LUA_FILE}.backup.v2"
+    
+    # Find line with table.insert default-tag
+    local LINE_NUM=$(grep -n 'table.insert(config_lines, "default-tag' "$LUA_FILE" | cut -d: -f1)
+    
+    if [ -z "$LINE_NUM" ]; then
+        log "✗ Cannot find 'default-tag' line in LUA file"
+        return 1
+    fi
+    
+    log "✓ Found patch location at line $LINE_NUM"
+    
+    # Apply patch BEFORE table.insert line
+    sed -i "${LINE_NUM}i\\
+-- $MARKER\\
+DEFAULT_TAG = \"gfw\"" "$LUA_FILE"
+    
+    # Verify
+    if grep -q "$MARKER" "$LUA_FILE"; then
+        log "✓ Passwall DNS patch applied successfully!"
+        log "  File: $LUA_FILE"
+        log "  Effect: default-tag will ALWAYS be 'gfw'"
+        log "  Result: All domains use proxy DNS (no leaks!)"
+        log ""
+        log "✓ PERMANENT FIX APPLIED!"
+        return 0
+    else
+        log "✗ Failed to apply patch"
+        return 1
+    fi
+}
+
+# Fix dnsmasq DNS leak
+fix_dnsmasq_dns_leak() {
+    log ""
+    log "=========================================="
+    log "FIXING DNSMASQ DNS LEAK"
+    log "=========================================="
+    log ""
+    
+    # Remove all DNS servers from dnsmasq
+    local removed=0
+    while uci -q delete dhcp.@dnsmasq[0].server; do
+        removed=$((removed + 1))
+    done
+    
+    if [ $removed -gt 0 ]; then
+        log "✓ Removed $removed DNS server(s) from dnsmasq"
+    else
+        log "✓ No DNS servers in dnsmasq (already clean)"
+    fi
+    
+    # Set noresolv=1 (don't read system resolv.conf)
+    uci set dhcp.@dnsmasq[0].noresolv='1'
+    log "✓ Set noresolv=1 (dnsmasq won't read system DNS)"
+    
+    # Commit
+    uci commit dhcp
+    log "✓ Changes committed"
+    
+    # Reload dnsmasq
+    /etc/init.d/dnsmasq reload 2>/dev/null
+    sleep 1
+    
+    if pgrep dnsmasq >/dev/null; then
+        log "✓ dnsmasq reloaded successfully"
+    else
+        log "⚠️  dnsmasq not running, restarting..."
+        /etc/init.d/dnsmasq restart 2>/dev/null
+    fi
+    
+    log ""
+    log "✓ DNS LEAK FIX COMPLETED"
+}
+
+# ==================== AUTO-SHOW VPN STATUS ON LOGIN ====================
+
+setup_auto_show_vpn_status() {
+    local SHINIT_FILE="/etc/shinit"
+    local SHOW_SCRIPT="/root/show-vpn-status.sh"
+    local MARKER="show-vpn-status.sh"
+    
+    # Check if already configured
+    if grep -q "$MARKER" "$SHINIT_FILE" 2>/dev/null; then
+        return 0  # Already configured, skip
+    fi
+    
+    log ""
+    log "=========================================="
+    log "SETTING UP AUTO-SHOW VPN STATUS"
+    log "=========================================="
+    log ""
+    log "This is a ONE-TIME setup that adds auto-display"
+    log "of VPN status when opening SSH/console"
+    log ""
+    
+    # Check if show-vpn-status.sh exists
+    if [ ! -f "$SHOW_SCRIPT" ]; then
+        log "⚠️  $SHOW_SCRIPT not found - creating it now..."
+        
+        # Create show-vpn-status.sh with ENHANCED display
+        cat > "$SHOW_SCRIPT" << 'EOFSCRIPT'
+#!/bin/sh
+# Display Enhanced VPN Status on Login
+
+show_vpn_status() {
+    local LOG="/tmp/dual-vpn-switcher.log"
+    
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "  CURRENT VPN STATUS"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    
+    # Check if switcher is running
+    if ! pgrep -f "dual-vpn-switcher.sh" > /dev/null; then
+        printf "\033[1;33m⚠️  VPN Switcher not running!\033[0m\n"
+        echo ""
+        echo "Start with: /root/dual-vpn-switcher.sh &"
+        echo ""
+        echo "═══════════════════════════════════════════════════════════"
+        echo ""
+        return
+    fi
+    
+    # Show last status from log with colors
+    if [ -f "$LOG" ]; then
+        # Extract IP (full geolocation line)
+        local ip=$(tail -100 "$LOG" | grep "IP:" | grep -v "Ping target" | tail -1 | sed 's/.*IP: //')
+        if [ -n "$ip" ]; then
+            printf "\033[0;32mIP: %s\033[0m\n" "$ip"
+        fi
+        
+        # Extract Latency
+        local latency=$(tail -100 "$LOG" | grep "Latency:" | tail -1 | sed 's/.*Latency: //')
+        if [ -n "$latency" ]; then
+            if echo "$latency" | grep -q "Excellent\|Good"; then
+                printf "\033[0;32mLatency: %s\033[0m\n" "$latency"
+            elif echo "$latency" | grep -q "Fair"; then
+                printf "\033[1;33mLatency: %s\033[0m\n" "$latency"
+            else
+                printf "\033[0;31mLatency: %s\033[0m\n" "$latency"
+            fi
+        fi
+        
+        # Extract Jitter
+        local jitter=$(tail -100 "$LOG" | grep "Jitter:" | tail -1 | sed 's/.*Jitter: //')
+        if [ -n "$jitter" ]; then
+            printf "Jitter: %s\n" "$jitter"
+        fi
+        
+        # Extract Packet Loss
+        local loss=$(tail -100 "$LOG" | grep "Packet Loss:" | tail -1 | sed 's/.*Packet Loss: //')
+        if [ -n "$loss" ]; then
+            if echo "$loss" | grep -q "0%"; then
+                printf "\033[0;32mPacket Loss: %s\033[0m\n" "$loss"
+            else
+                printf "\033[0;31mPacket Loss: %s\033[0m\n" "$loss"
+            fi
+        fi
+        
+        echo ""
+        
+        # Extract Mode
+        local mode=$(tail -100 "$LOG" | grep "Mode:" | tail -1 | sed 's/.*Mode: //')
+        if [ -n "$mode" ]; then
+            printf "\033[0;32mMode: %s\033[0m\n" "$mode"
+        fi
+    else
+        echo "No log file found."
+    fi
+    
+    echo ""
+    echo "Log: tail -f /tmp/dual-vpn-switcher.log"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+}
+
+# Run on login
+show_vpn_status
+EOFSCRIPT
+        
+        chmod +x "$SHOW_SCRIPT"
+        log "✓ Created: $SHOW_SCRIPT"
+    fi
+    
+    # Backup /etc/shinit
+    if [ -f "$SHINIT_FILE" ]; then
+        cp "$SHINIT_FILE" "${SHINIT_FILE}.backup" 2>/dev/null
+        log "✓ Backup created: ${SHINIT_FILE}.backup"
+    fi
+    
+    # Add to /etc/shinit
+    cat >> "$SHINIT_FILE" << 'EOF'
+
+# Auto-show VPN status
+[ -f /root/show-vpn-status.sh ] && /root/show-vpn-status.sh
+EOF
+    
+    # Verify
+    if grep -q "$MARKER" "$SHINIT_FILE"; then
+        log "✓ Auto-show configured in $SHINIT_FILE"
+        log "  Now VPN status will display on every console login"
+        log ""
+        log "✓ SETUP COMPLETE - This will survive reboots!"
+        return 0
+    else
+        log "✗ Failed to configure auto-show"
+        return 1
+    fi
+}
+
+
+# ==================== DNS PATCH FUNCTION (Legacy - kept for compatibility) ====================
+
+patch_passwall_dns() {
+    log ""
+    log "Checking Passwall DNS configuration..."
+    
+    # Wait for Passwall to fully start and create config (optimized: was 5)
+    sleep 2
+    
+    # Check if chinadns-ng config exists
+    if [ ! -f /tmp/etc/passwall/acl/default/chinadns_ng.conf ]; then
+        log "  ⚠️  chinadns-ng config not found yet - waiting..."
+        sleep 3
+    fi
+    
+    if [ -f /tmp/etc/passwall/acl/default/chinadns_ng.conf ]; then
+        # Check if already patched
+        if grep -q "^default-tag gfw" /tmp/etc/passwall/acl/default/chinadns_ng.conf; then
+            log "  ✓ DNS already configured: default-tag gfw"
+            log ""
+            return 0
+        fi
+        
+        # Need to patch
+        log "  Patching DNS: default-tag chn → gfw"
+        
+        # Kill chinadns-ng
+        killall chinadns-ng 2>/dev/null
+        sleep 1
+        
+        # Patch config: change default-tag from 'chn' to 'gfw'
+        sed -i 's/^default-tag chn$/default-tag gfw/' /tmp/etc/passwall/acl/default/chinadns_ng.conf
+        
+        # Verify patch
+        if grep -q "^default-tag gfw" /tmp/etc/passwall/acl/default/chinadns_ng.conf; then
+            log "  ✓ Patch applied successfully"
+        else
+            log "  ⚠️  Patch failed!"
+        fi
+        
+        # Restart chinadns-ng with patched config
+        /tmp/etc/passwall/bin/chinadns-ng -C /tmp/etc/passwall/acl/default/chinadns_ng.conf >/dev/null 2>&1 &
+        sleep 2
+        
+        if pgrep chinadns-ng >/dev/null; then
+            log "  ✓ chinadns-ng restarted"
+        else
+            log "  ✗ chinadns-ng failed to start!"
+        fi
+    else
+        log "  ✗ chinadns-ng config not found!"
+    fi
+    
+    log ""
 }
 
 # ==================== DETECTION FUNCTIONS ====================
@@ -69,6 +692,9 @@ is_rw_running() {
 
 configure_passwall() {
     log ""
+    # Kill switch: unblock when Passwall activates
+    remove_kill_switch
+    
     log "=========================================="
     log "CONFIGURING PASSWALL MODE"
     log "=========================================="
@@ -77,16 +703,16 @@ configure_passwall() {
     # 1. Stop OpenVPN upstream (if running)
     local VPN_NAME=$(get_openvpn_name)
     if [ -n "$VPN_NAME" ]; then
-        log "[1/7] Stopping OpenVPN: $VPN_NAME"
+        log "[1/8] Stopping OpenVPN: $VPN_NAME"
         /etc/init.d/openvpn stop $VPN_NAME 2>/dev/null
-        sleep 2
+        sleep 1  # Optimized: was 2
         log "  ✓ OpenVPN stopped"
     else
-        log "[1/7] No OpenVPN upstream running"
+        log "[1/8] No OpenVPN upstream running"
     fi
     
     # 2. CRITICAL: STOP + DISABLE fw4
-    log "[2/7] Disabling fw4 firewall..."
+    log "[2/8] Disabling fw4 firewall..."
     
     /etc/init.d/firewall stop 2>/dev/null
     /etc/init.d/firewall disable 2>/dev/null
@@ -106,33 +732,35 @@ configure_passwall() {
     log "  ✓ fw4 stopped and disabled"
     
     # 3. Remove rwfix nftables (OpenVPN stuff)
-    log "[3/7] Cleaning rwfix nftables..."
+    log "[3/8] Cleaning rwfix nftables..."
     if nft list table inet rwfix >/dev/null 2>&1; then
         nft delete table inet rwfix 2>/dev/null
         log "  ✓ rwfix removed"
     fi
     
     # 4. Flush vpnout table
-    log "[4/7] Flushing vpnout table..."
+    log "[4/8] Flushing vpnout table..."
     if ip route show table vpnout 2>/dev/null | grep -q .; then
         ip route flush table vpnout 2>/dev/null
         log "  ✓ vpnout flushed"
     fi
     
     # 5. Remove IP rules
-    log "[5/7] Cleaning IP rules..."
+    log "[5/8] Cleaning IP rules..."
     while ip rule del iif tun0 lookup vpnout 2>/dev/null; do :; done
-    log "  ✓ IP rules cleaned"
+    # CRITICAL: Also remove fwmark rules left by OpenVPN
+    while ip rule del fwmark 0x1 lookup vpnout 2>/dev/null; do :; done
+    log "  ✓ IP rules cleaned (iif tun0 + fwmark)"
     
     # 6. Stop vpn-dns-monitor
-    log "[6/7] Stopping vpn-dns-monitor..."
+    log "[6/8] Stopping vpn-dns-monitor..."
     if pgrep -f vpn-dns-monitor.sh >/dev/null; then
         killall vpn-dns-monitor.sh 2>/dev/null
         log "  ✓ vpn-dns-monitor stopped"
     fi
     
     # 7. Restart Passwall (let it configure itself)
-    log "[7/7] Restarting Passwall..."
+    log "[7/8] Restarting Passwall..."
     log ""
     
     # On first run, do extra restart for clean state
@@ -146,9 +774,9 @@ configure_passwall() {
         /etc/init.d/passwall restart 2>&1 | tee -a "$LOG"
     fi
     
-    # Wait for Passwall to stabilize
+    # Wait for Passwall to stabilize (optimized)
     log "  Waiting for Passwall to stabilize..."
-    sleep 5
+    sleep 3  # Reduced from 5s for faster startup
     
     # 8. Verify Passwall is working WITH RETRY
     local RETRY=0
@@ -160,15 +788,40 @@ configure_passwall() {
             log "✅ PASSWALL MODE ACTIVE!"
             log "  ✓ fw4 disabled"
             
-            # Check if Passwall created nftables (TCP/UDP mode) or not (SOCKS5-only mode)
+            # OPTIMIZED: Quick nftables check + fast restart
+            log "  ⏳ Quick nftables check..."
+            sleep 3  # Short wait for nftables to be created
+            
+            # Check if nftables created
             if nft list table inet passwall >/dev/null 2>&1 || nft list table inet passwall2 >/dev/null 2>&1; then
-                log "  ✓ Passwall nftables created (TCP/UDP mode)"
+                log "  ✓ Passwall nftables created (TCP/UDP transparent proxy mode)"
             else
-                log "  ⚠️  Passwall running in SOCKS5-only mode (no nftables)"
+                # nftables not created - force restart immediately (no waiting)
+                log "  ⚠️  nftables not created - forcing quick restart..."
+                /etc/init.d/passwall stop 2>/dev/null
+                sleep 2
+                /etc/init.d/passwall start 2>/dev/null
+                sleep 3  # Shorter wait
+                
+                # Final check
+                if nft list table inet passwall >/dev/null 2>&1 || nft list table inet passwall2 >/dev/null 2>&1; then
+                    log "  ✓ nftables created after restart!"
+                else
+                    log "  ❌ nftables STILL not created - running in SOCKS5-only mode"
+                    log "  ⚠️  Clients may not have internet! Check Passwall config."
+                fi
             fi
             
             log "  ✓ RW clients (tun0) → Passwall"
+            
+            # CRITICAL: Patch DNS configuration
             log ""
+            log "[8/8] Applying DNS patch..."
+            patch_passwall_dns
+            
+            log "✅ PASSWALL CONFIGURATION COMPLETE!"
+            log ""
+            show_connection_status "Passwall"
             return 0
         fi
         
@@ -183,7 +836,7 @@ configure_passwall() {
             
             # Restart Passwall
             /etc/init.d/passwall restart 2>&1 | tee -a "$LOG"
-            sleep 10
+            sleep 5  # Reduced from 10s for faster retry
         fi
     done
     
@@ -205,6 +858,9 @@ configure_passwall() {
 
 configure_openvpn() {
     local VPN_NAME="$1"
+    # Kill switch: unblock when OpenVPN activates
+    remove_kill_switch
+    
     
     log ""
     log "=========================================="
@@ -292,9 +948,9 @@ configure_openvpn() {
     sleep 1
     
     if [ -f /root/vpn-dns-monitor.sh ]; then
-        /root/vpn-dns-monitor.sh "$VPN_NAME" &
-        sleep 2
-        log "  ✓ vpn-dns-monitor started for $VPN_NAME"
+        /root/vpn-dns-monitor.sh auto &
+        sleep 1  # Optimized: was 2
+        log "  ✓ vpn-dns-monitor started in AUTO mode"
     else
         log "  ⚠️ vpn-dns-monitor.sh not found!"
     fi
@@ -303,6 +959,27 @@ configure_openvpn() {
     log ""
     log "✅ OPENVPN MODE ACTIVE!"
     log "  ✓ fw4 enabled"
+    # Wait for routes to be fully applied before checking IP
+    log ""
+    log "[7/7] Waiting for routes to stabilize..."
+    sleep 3
+    
+    # Verify that routing through tun1 is working
+    ROUTE_CHECK=0
+    for i in 1 2 3; do
+        if ip route get 8.8.8.8 2>/dev/null | grep -q tun1; then
+            ROUTE_CHECK=1
+            log "  ✓ Routes stabilized (attempt $i/3)"
+            break
+        fi
+        sleep 2
+    done
+    
+    if [ $ROUTE_CHECK -eq 0 ]; then
+        log "  ⚠️  Routes may not be fully applied"
+    fi
+    
+    show_connection_status "OpenVPN"
     log "  ✓ rwfix nftables created"
     log "  ✓ vpnout table configured"
     log "  ✓ vpn-dns-monitor running"
@@ -317,20 +994,20 @@ configure_openvpn() {
 : > "$LOG"
 
 log "=========================================="
-log "Dual VPN Switcher v11.10 - UCI Check"
+log "Dual VPN Switcher v0.7 - OPTIMIZED Edition"
 log "=========================================="
 log "Monitoring: Passwall + OpenVPN"
-log "Check interval: ${CHECK_INTERVAL}s"
+log "Check interval: ${CHECK_INTERVAL}s (optimized: was 5s)"
 log ""
 log "Function: Auto-switch between modes"
-log "  - Passwall ready → PASSWALL MODE (fw4 OFF)"
+log "  - Passwall ready → PASSWALL MODE (fw4 OFF + DNS patch)"
 log "  - OpenVPN ready → OPENVPN MODE (fw4 ON + DNS)"
 log "  - RW (tun0) down > 10s → Auto-restart RW"
 log ""
 
-# Wait for system to stabilize
+# Wait for system to stabilize (optimized: was 10)
 log "Waiting for system to stabilize..."
-sleep 10
+sleep 5
 
 # Initial cleanup
 log "Performing initial cleanup..."
@@ -351,12 +1028,22 @@ fi
 
 # Remove IP rules
 while ip rule del iif tun0 lookup vpnout 2>/dev/null; do :; done
+while ip rule del fwmark 0x1 lookup vpnout 2>/dev/null; do :; done
 
 log "✓ Initial cleanup complete"
 log ""
 
-# Wait a bit more
-sleep 5
+# Apply permanent Passwall DNS fix (one-time, idempotent)
+apply_permanent_passwall_dns_fix
+
+# Fix dnsmasq DNS leak (one-time, idempotent)
+fix_dnsmasq_dns_leak
+
+# Setup auto-show VPN status on login (one-time, idempotent)
+setup_auto_show_vpn_status
+
+# Wait a bit more (optimized: was 5)
+sleep 2
 
 log "Starting monitoring..."
 log ""
@@ -482,6 +1169,22 @@ while true; do
                 fi
                 ;;
         esac
+    fi
+    
+    # CONTINUOUS DNS PATCH: Auto-fix chinadns-ng if config reverts
+    # This runs every loop when Passwall is active
+    if [ "$CURRENT_MODE" = "passwall" ] && [ -f /tmp/etc/passwall/acl/default/chinadns_ng.conf ]; then
+        # Check if config needs patching (silently, every 30s)
+        if [ $((LOOP_COUNT % 6)) -eq 0 ]; then
+            if grep -q "^default-tag chn$" /tmp/etc/passwall/acl/default/chinadns_ng.conf 2>/dev/null; then
+                # Config reverted - re-patch silently
+                killall chinadns-ng 2>/dev/null
+                sleep 1
+                sed -i 's/^default-tag chn$/default-tag gfw/' /tmp/etc/passwall/acl/default/chinadns_ng.conf
+                /tmp/etc/passwall/bin/chinadns-ng -C /tmp/etc/passwall/acl/default/chinadns_ng.conf >/dev/null 2>&1 &
+                log "[AUTO-PATCH] DNS config reverted - re-patched to gfw"
+            fi
+        fi
     fi
     
     sleep $CHECK_INTERVAL
