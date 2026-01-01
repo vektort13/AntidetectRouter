@@ -82,14 +82,6 @@ if ! check_interface "$PUB_DEV"; then
   exit 1
 fi
 
-# Kill Switch: never allow RW(tun0) to egress via public WAN
-nft delete table inet rwks 2>/dev/null || true
-nft -f - <<EOF
-add table inet rwks
-add chain inet rwks forward { type filter hook forward priority -100; policy accept; }
-add rule inet rwks forward iifname "$SRV_IF" oifname "$PUB_DEV" drop
-EOF
-
 # --------- packages ----------
 say "=== Installing base packages ==="
 opkg update || warn "opkg update: errors occurred (continuing)"
