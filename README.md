@@ -1,4 +1,4 @@
-# AntiDetect Router (beta) v.0.3.0
+# AntiDetect Router (beta) v.0.5.1
 
 > **Status:** ⚠️ Early beta – expect bugs, rough edges and sharp corners.  
 > **Author:** Vektor T13  
