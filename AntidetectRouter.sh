@@ -143,6 +143,93 @@ rwpatch_fetch() {
   return 0
 }
 
+# ============================================================
+# VEKTORT13 PATCH (Web UI + backend) AUTO-INSTALL FROM GITHUB ZIP
+# ============================================================
+VEKT13_ENABLE="${VEKT13_ENABLE:-1}"
+
+# !!! ВАЖНО: если репозиторий твой — укажи свой
+VEKT13_REPO="${VEKT13_REPO:-vektort13/AntidetectRouter}"
+
+# Можно "main", можно конкретный commit SHA
+# Если хочешь “всегда самое новое” — ставь main
+VEKT13_REF="${VEKT13_REF:-main}"
+
+# Где лежит zip в репо (если ты залил в корень — так и оставь)
+VEKT13_ZIP_PATH="${VEKT13_ZIP_PATH:-vektort13.zip}"
+
+# 1 = ставить matrix-патч в LuCI (не обязательно)
+VEKT13_MATRIX_ENABLE="${VEKT13_MATRIX_ENABLE:-0}"
+
+fetch_bin() {
+  # fetch_bin <url> <dest>
+  # ВАЖНО: без sed/конвертаций, иначе zip сломается
+  local url="$1" dest="$2" tmp
+  tmp="$(mktemp -p /tmp vekt13bin.XXXXXX 2>/dev/null)" || tmp="/tmp/vekt13bin.$$"
+  rm -f "$tmp" 2>/dev/null || true
+
+  if command -v uclient-fetch >/dev/null 2>&1; then
+    uclient-fetch -q -T 60 -O "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 10 --max-time 180 -o "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  else
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+
+  [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+vekt13_install_from_zip() {
+  [ "${VEKT13_ENABLE:-0}" = "1" ] || { warn "VEKT13 patch: disabled (VEKT13_ENABLE=0)"; return 0; }
+
+  local zip_url="https://raw.githubusercontent.com/${VEKT13_REPO}/${VEKT13_REF}/${VEKT13_ZIP_PATH}"
+  local zip_file="/tmp/vektort13.zip"
+  local base_dir="/tmp/vektort13"
+  local new_dir="${base_dir}/vektort13/vektort13-NEW"
+
+  say "=== VEKT13 PATCH: download & install ==="
+  say "ZIP: $zip_url"
+
+  rm -rf "$base_dir" 2>/dev/null || true
+  rm -f "$zip_file" 2>/dev/null || true
+
+  fetch_bin "$zip_url" "$zip_file" || { err "VEKT13 patch: failed to download zip"; return 1; }
+
+  mkdir -p "$base_dir" || true
+  unzip -o "$zip_file" -d "$base_dir" >/dev/null 2>&1 || { err "VEKT13 patch: unzip failed"; return 1; }
+
+  if [ ! -d "$new_dir" ]; then
+    err "VEKT13 patch: folder not found after unzip: $new_dir"
+    ls -la "$base_dir" || true
+    return 1
+  fi
+
+  chmod +x "$new_dir"/*.sh 2>/dev/null || true
+
+  say "Running: install.sh"
+  ( cd "$new_dir" && ./install.sh ) || { err "VEKT13 patch: install.sh failed"; return 1; }
+
+  say "Running: install-redirect.sh"
+  ( cd "$new_dir" && ./install-redirect.sh ) || warn "VEKT13 patch: install-redirect.sh failed"
+
+  if [ "${VEKT13_MATRIX_ENABLE:-0}" = "1" ]; then
+    say "Running: install-matrix.sh (optional)"
+    chmod +x "${base_dir}/vektort13/install-matrix.sh" 2>/dev/null || true
+    ( cd "${base_dir}/vektort13" && ./install-matrix.sh ) || warn "VEKT13 patch: install-matrix.sh failed"
+  fi
+
+  /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+  say "✓ VEKT13 patch installed"
+  say "Web: http://$PUB_IP/ (redirect) or http://$PUB_IP/vektort13-admin/"
+  return 0
+}
+
+
 rwpatch_install_files() {
   [ "${RWPATCH_ENABLE:-0}" = "1" ] || { warn "rwpatch: disabled (RWPATCH_ENABLE=0)"; return 0; }
 
@@ -811,6 +898,7 @@ fi
 # RWPATCH: download + install + autostart + start now
 # ============================================================
 if rwpatch_install_files; then
+  vekt13_install_from_zip || warn "UI patch install failed (continuing)"
   rwpatch_enable_autostart
   rwpatch_start_now
 else
