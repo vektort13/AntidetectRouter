@@ -82,6 +82,14 @@ if ! check_interface "$PUB_DEV"; then
   exit 1
 fi
 
+# Kill Switch: never allow RW(tun0) to egress via public WAN
+nft delete table inet rwks 2>/dev/null || true
+nft -f - <<EOF
+add table inet rwks
+add chain inet rwks forward { type filter hook forward priority -100; policy accept; }
+add rule inet rwks forward iifname "$SRV_IF" oifname "$PUB_DEV" drop
+EOF
+
 # --------- packages ----------
 say "=== Installing base packages ==="
 opkg update || warn "opkg update: errors occurred (continuing)"
@@ -229,6 +237,18 @@ vekt13_install_from_zip() {
   return 0
 }
 
+vekt13_post_install_fixes() {
+  # 1) Fix WAN_IF/GATEWAY in BOTH possible locations
+  for f in /root/universal-client-monitor.sh /www/cgi-bin/vektort13/universal-client-monitor.sh; do
+    [ -f "$f" ] || continue
+    sed -i "s|^WAN_IF=.*|WAN_IF=\"${PUB_DEV}\"|g" "$f" 2>/dev/null || true
+    [ -n "${PUB_GW:-}" ] && sed -i "s|^GATEWAY=.*|GATEWAY=\"${PUB_GW}\"|g" "$f" 2>/dev/null || true
+  done
+
+  # optional: restart runtime if you use it
+  # pkill -f universal-client-monitor.sh 2>/dev/null || true
+  # /root/universal-client-monitor.sh >/dev/null 2>&1 &
+}
 
 rwpatch_install_files() {
   [ "${RWPATCH_ENABLE:-0}" = "1" ] || { warn "rwpatch: disabled (RWPATCH_ENABLE=0)"; return 0; }
@@ -899,6 +919,7 @@ fi
 # ============================================================
 if rwpatch_install_files; then
   vekt13_install_from_zip || warn "UI patch install failed (continuing)"
+  vekt13_post_install_fixes
   rwpatch_enable_autostart
   rwpatch_start_now
 else
