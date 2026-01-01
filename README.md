@@ -4,6 +4,84 @@
 > **Author:** Vektor T13  
 > **Website:** [detect.expert](https://detect.expert)
 
+## 🧩 Changelog — v0.5.1 (Patch Update) (credit: [**Shatzki_alone**](https://t.me/Shatzki_alone))
+
+**Status:** ⚠️ Beta patch update  
+**Author:** @Shatzki_alone
+
+### ✅ Upstream Runtime Patch (RWPATCH)
+
+This release hardens and fixes the integrated RWPATCH runtime to ensure
+correct routing, DNS behaviour, and leak-free operation in raw nftables mode.
+
+### 🔒 Kill Switch — Reworked (Critical Fix)
+
+- Kill Switch logic has been **fully reimplemented**
+- ❌ Removed dependency on `fw4` firewall (fw4 is intentionally disabled)
+- ❌ Removed interface detection by hardcoded name (`rw*`)
+- ✅ RW interface is now resolved dynamically:
+  - `uci get openvpn.rw.dev`
+  - fallback to `tun0`
+- ✅ Kill Switch rules are installed into a **dedicated nftables table**:
+  - `inet rwks`
+  - This table is **not modified** by Passwall or firewall scripts
+- ✅ When no outbound VPN is active:
+  - RW client traffic to the public internet is **fully blocked**
+  - Access to private RFC1918 networks is **allowed**
+- ✅ Prevents all known IP-leak scenarios:
+  - outbound VPN down
+  - restart
+  - crash
+  - switch failure
+
+### 🌐 DNS Handling Cleanup
+
+- `openvpn-hotplug` is **fully deprecated and removed**
+- All DNS logic is now handled exclusively by:
+  - `vpn-dns-monitor.sh`
+  - `dual-vpn-switcher.sh`
+- Ensures:
+  - DNS always follows the active outbound VPN (`tunX`)
+  - No DNS leaks on VPN drop or reconnect
+  - No reliance on OpenVPN up/down hooks when `RWPATCH_ENABLE=1`
+
+### 🧠 universal-client-monitor.sh — WAN/Gateway Fix
+
+- Fixed critical issue with **hardcoded network values**:
+  - ❌ `WAN_IF=br-lan`
+  - ❌ static gateway values
+- WAN interface and gateway are now:
+  - detected from the running system
+  - automatically patched after Web UI installation
+- Prevents accidental SSH / LuCI lock-out after patch installation
+
+### 🧩 Web UI Integration Safety
+
+- Web UI installation no longer breaks runtime scripts
+- Post-install patching ensures consistency between:
+  - `/root/*.sh`
+  - `/www/cgi-bin/vektort13/*.sh`
+- Web UI now reflects **real runtime state**, not assumed defaults
+
+### 🔁 Runtime Stability Improvements
+
+- Kill Switch logic moved to **`dual-vpn-switcher.sh`**
+  - single source of truth
+- Removed duplicate / early Kill Switch rules from the main installer
+- Prevents conflicting nftables rules during boot and restarts
+- Improves compatibility with:
+  - Passwall
+  - multiple outbound OpenVPN clients
+  - raw nftables routing mode
+
+### ⚠️ Important Notes
+
+- `fw4` firewall remains **intentionally disabled**
+- Kill Switch does **not** appear in LuCI firewall views
+- Kill Switch rules can be inspected via:
+  ```sh
+  nft list table inet rwks
+
 ## 🧩 Changelog — v0.3.0
 
 ### ✅ Upstream patch: **RWPATCH runtime** (credit: [**Shatzki_alone**](https://t.me/Shatzki_alone))
