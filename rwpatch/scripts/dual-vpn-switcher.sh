@@ -18,58 +18,46 @@ log() {
 # Block RW client traffic when no VPN is active
 
 KILL_SWITCH_ENABLED=1  # Set to 0 to disable
+RW_IF="$(uci -q get openvpn.rw.dev 2>/dev/null || echo tun0)"
 
 # Apply kill switch rules
+# Apply kill switch rules (no fw4 dependency)
 apply_kill_switch() {
-    if [ "$KILL_SWITCH_ENABLED" != "1" ]; then
+    [ "$KILL_SWITCH_ENABLED" = "1" ] || return 0
+
+    # Refresh RW_IF each time (in case UCI changes)
+    RW_IF="$(uci -q get openvpn.rw.dev 2>/dev/null || echo tun0)"
+
+    # If interface doesn't exist yet - skip
+    if ! ip link show "$RW_IF" >/dev/null 2>&1; then
+        log "⚠️  Kill Switch: $RW_IF not found, skipping"
         return 0
     fi
-    
-    log "⛔ Kill Switch: Blocking RW client traffic (no VPN active)"
-    
-    # Get RW interface
-    local rw_iface=$(ip link show | grep -E '^[0-9]+: rw' | awk -F: '{print $2}' | tr -d ' ' | head -1)
-    
-    if [ -z "$rw_iface" ]; then
-        log "⚠️  Kill Switch: RW interface not found, skipping"
-        return 0
-    fi
-    
-    # Block forwarding FROM rw interface (clients can't access internet)
-    # But allow:
-    # - Local network access (192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12)
-    # - DNS to router (port 53)
-    # - DHCP (port 67-68)
-    
-    # Create kill switch chain if not exists
-    nft add chain inet fw4 kill_switch_rw { type filter hook forward priority 0 \; } 2>/dev/null || true
-    
-    # Flush existing rules
-    nft flush chain inet fw4 kill_switch_rw 2>/dev/null || true
-    
-    # Add rules: block all forwarding from RW except local networks
-    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" ip daddr 192.168.0.0/16 accept
-    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" ip daddr 10.0.0.0/8 accept
-    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" ip daddr 172.16.0.0/12 accept
-    nft add rule inet fw4 kill_switch_rw iifname "$rw_iface" drop
-    
-    log "✓ Kill Switch: RW clients blocked from internet (local network allowed)"
+
+    log "⛔ Kill Switch: Blocking RW traffic on $RW_IF (no VPN active)"
+
+    # Dedicated table that Passwall/fw4 won't delete
+    nft delete table inet rwks 2>/dev/null || true
+
+    nft -f - <<EOF
+add table inet rwks
+add chain inet rwks forward { type filter hook forward priority -150; policy accept; }
+add rule inet rwks forward iifname "$RW_IF" ip daddr 192.168.0.0/16 accept
+add rule inet rwks forward iifname "$RW_IF" ip daddr 10.0.0.0/8 accept
+add rule inet rwks forward iifname "$RW_IF" ip daddr 172.16.0.0/12 accept
+add rule inet rwks forward iifname "$RW_IF" drop
+EOF
+
+    log "✓ Kill Switch: RW blocked from internet (local nets allowed)"
 }
 
 # Remove kill switch rules
 remove_kill_switch() {
-    if [ "$KILL_SWITCH_ENABLED" != "1" ]; then
-        return 0
-    fi
-    
-    log "✅ Kill Switch: Allowing RW client traffic (VPN active)"
-    
-    # Delete kill switch chain
-    nft delete chain inet fw4 kill_switch_rw 2>/dev/null || true
-    
-    log "✓ Kill Switch: RW clients unblocked"
-}
+    [ "$KILL_SWITCH_ENABLED" = "1" ] || return 0
 
+    nft delete table inet rwks 2>/dev/null || true
+    log "✓ Kill Switch: RW unblocked"
+}
 
 # ==================== ENHANCED CONNECTION STATUS DISPLAY ====================
 
