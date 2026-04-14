@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VEKTORT13 Admin Panel</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="logo">
+            <h1>VEKTORT13</h1>
+            <p>Admin Panel</p>
+        </div>
+        
+        <nav class="menu">
+            <a href="#/dashboard" class="menu-item active" data-page="dashboard">
+                <span class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><filter id="glow"><feGaussianBlur stdDeviation="0.8" result="coloredBlur"/><feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><path d="M 4 4 L 12 20 L 20 4" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#glow)" opacity="0.9"/><path d="M 6 6 L 12 18 L 18 6" stroke="rgba(255,255,255,0.4)" stroke-width="1" stroke-linecap="round" fill="none"/></svg></span>
+                <span>Dashboard</span>
+            </a>
+            <a href="#/passwall" class="menu-item" data-page="passwall">
+                <span class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="3" width="2" height="18" fill="#94a3b8" opacity="0.6"/><rect x="13" y="3" width="1.5" height="18" fill="#94a3b8" opacity="0.4"/><g stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9"><path d="M 3 12 L 10 12"/><path d="M 13 12 L 21 12"/><path d="M 17 9 L 21 12 L 17 15"/></g><circle cx="5" cy="12" r="1" fill="#ffffff" opacity="0.7"/><circle cx="7.5" cy="12" r="0.8" fill="#ffffff" opacity="0.5"/></svg></span>
+                <span>Passwall</span>
+            </a>
+            <a href="#/openvpn" class="menu-item" data-page="openvpn">
+                <span class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ovpnGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#FF8C00;stop-opacity:1"/><stop offset="100%" style="stop-color:#FF6600;stop-opacity:1"/></linearGradient></defs><circle cx="12" cy="12" r="10" fill="url(#ovpnGrad)" opacity="0.9"/><g transform="translate(12, 12)"><circle cx="0" cy="-2" r="2.5" fill="#1a2332"/><path d="M -1.5 -1 L -1 3 L 1 3 L 1.5 -1 Z" fill="#1a2332"/></g></svg></span>
+                <span>OpenVPN</span>
+            </a>
+            <a href="#/logs" class="menu-item" data-page="logs">
+                <span class="icon">📋</span>
+                <span>Logs</span>
+            </a>
+            <a href="#/network" class="menu-item" data-page="network">
+                <span class="icon">🌐</span>
+                <span>Network</span>
+            </a>
+            <a href="#/advanced" class="menu-item" data-page="advanced">
+                <span class="icon">🔧</span>
+                <span>Advanced</span>
+            </a>
+        </nav>
+        
+        <div class="sidebar-footer">
+            <!-- Version Switcher -->
+            <div class="version-switcher">
+                <a href="/cgi-bin/luci" target="_blank" class="version-btn" title="Switch to LuCI">
+                    <span class="icon">🔄</span>
+                    <span>LuCI</span>
+                </a>
+            </div>
+            
+            <button class="logout-btn">
+                <span>Logout</span>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+    
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Dashboard -->
+        <div id="page-dashboard" class="page active">
+            <div class="page-header">
+                <h2>Dashboard</h2>
+                <p>System Overview</p>
+            </div>
+            
+            <div class="cards-row">
+                <div class="card">
+                    <div class="card-icon">💻</div>
+                    <div class="card-content">
+                        <div class="card-label">CPU Usage</div>
+                        <div class="card-value" id="cpu-usage">--</div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-icon">🧠</div>
+                    <div class="card-content">
+                        <div class="card-label">RAM Usage</div>
+                        <div class="card-value" id="ram-usage">--</div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-icon">⏱️</div>
+                    <div class="card-content">
+                        <div class="card-label">Uptime</div>
+                        <div class="card-value" id="uptime">--</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>VPN Status</h3>
+                <div class="status-card">
+                    <div class="status-row">
+                        <span class="label">Status:</span>
+                        <span class="badge" id="vpn-status-badge">Loading...</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">Mode:</span>
+                        <span id="vpn-mode">--</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">Public IP:</span>
+                        <span class="highlight" id="public-ip">--</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">Location:</span>
+                        <span id="location">--</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">Latency:</span>
+                        <span id="latency">--</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Connection History</h3>
+                <div class="history-container">
+                    <div id="connection-history" class="connection-history">
+                        <div class="history-loading">Loading history...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- VPN Control -->
+        <!-- OpenVPN -->
+        <div id="page-openvpn" class="page">
+            <div class="page-header">
+                <h2>OpenVPN</h2>
+                <p>Manage configs</p>
+            </div>
+            
+            <div class="section">
+                <h3>Configs</h3>
+                <div id="openvpn-configs-container">
+                    <p>Loading...</p>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>Upload .ovpn Config</h3>
+                <div class="form-grid">
+                    <div class="form-row">
+                        <label>Instance Name:</label>
+                        <input type="text" id="ovpn-upload-name" placeholder="Optional - uses filename if empty" class="text-input">
+                    </div>
+                    <div class="form-row">
+                        <label>.ovpn File:</label>
+                        <input type="file" id="ovpn-upload-file" accept=".ovpn,.conf">
+                    </div>
+                    <div class="form-row">
+                        <label>Username (optional):</label>
+                        <input type="text" id="ovpn-upload-user" placeholder="Leave empty if embedded in .ovpn" class="text-input">
+                    </div>
+                    <div class="form-row">
+                        <label>Password (optional):</label>
+                        <input type="password" id="ovpn-upload-pass" placeholder="Leave empty if embedded in .ovpn" class="text-input">
+                    </div>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" id="btn-ovpn-upload">Upload Config</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Logs -->
+        <div id="page-logs" class="page">
+            <div class="page-header">
+                <h2>Logs</h2>
+                <p>View and monitor logs in real-time</p>
+            </div>
+            
+            <div class="section">
+                <div class="section-header">
+                    <h3>Live Logs</h3>
+                    <div class="log-status">
+                        <span class="log-indicator live"></span>
+                        <span id="system-log-status-text">Live</span>
+                    </div>
+                </div>
+                
+                <div class="logs-toolbar">
+                    <button class="btn btn-sm btn-primary" id="system-logs-pause-btn">⏸️ Pause</button>
+                    <button class="btn btn-sm btn-success" id="system-logs-refresh-btn">🔄 Refresh</button>
+                    <button class="btn btn-sm btn-warning" id="system-logs-clear-btn">🗑️ Clear Display</button>
+                    <button class="btn btn-sm btn-info" id="system-logs-download-btn">⬇️ Download</button>
+                </div>
+                
+                <div class="log-container" id="system-log-container">
+                    <div id="system-log-content">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Passwall Settings -->
+        <div id="page-passwall" class="page">
+            <div class="page-header">
+                <h2>Passwall Settings</h2>
+                <p>Configure Passwall nodes and settings</p>
+            </div>
+            
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="basic">Basic Settings</button>
+                <button class="tab-btn" data-tab="nodelist">Node List</button>
+                <button class="tab-btn" data-tab="nodeconfig">Node Config</button>
+                <button class="tab-btn" data-tab="passwallogs">Passwall Logs</button>
+            </div>
+            
+            <!-- Tab Content: Basic Settings -->
+            <div id="tab-basic" class="tab-content active">
+                <div class="section">
+                    <h3>Basic Configuration</h3>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label>Main Switch:</label>
+                            <input type="checkbox" id="pw-enabled" class="switch">
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>SOCKS Enabled:</label>
+                            <input type="checkbox" id="pw-socks-enabled" class="switch">
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>TCP Node:</label>
+                            <select id="pw-tcp-node" class="select-input">
+                                <option value="">Select node...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>UDP Node:</label>
+                            <select id="pw-udp-node" class="select-input">
+                                <option value="">Select node...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>SOCKS Node:</label>
+                            <select id="pw-socks-node" class="select-input">
+                                <option value="">Select node...</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="button-group">
+                        <button class="btn btn-primary" id="btn-pw-save">Save Settings</button>
+                        <button class="btn btn-success" id="btn-pw-apply">Apply & Restart</button>
+                        <button class="btn btn-danger" id="btn-pw-stop">Stop</button>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h3>DNS Settings</h3>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label>DNS Shunt:</label>
+                            <select id="pw-dns-shunt" class="select-input">
+                                <option value="chinadns-ng">ChinaDNS-NG (recommended)</option>
+                                <option value="dnsmasq">Dnsmasq</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>DNS Mode:</label>
+                            <select id="pw-dns-mode" class="select-input">
+                                <option value="tcp">TCP (recommended for SOCKS)</option>
+                                <option value="udp">UDP</option>
+                                <option value="doh">DoH (HTTPS)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>Remote DNS:</label>
+                            <select id="pw-remote-dns" class="select-input">
+                                <option value="1.1.1.1">1.1.1.1 (CloudFlare)</option>
+                                <option value="1.1.1.2">1.1.1.2 (CloudFlare-Security)</option>
+                                <option value="8.8.4.4">8.8.4.4 (Google)</option>
+                                <option value="8.8.8.8">8.8.8.8 (Google)</option>
+                                <option value="9.9.9.9">9.9.9.9 (Quad9)</option>
+                                <option value="149.112.112.112">149.112.112.112 (Quad9)</option>
+                                <option value="208.67.220.220">208.67.220.220 (OpenDNS)</option>
+                                <option value="208.67.222.222">208.67.222.222 (OpenDNS)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>Filter Proxy IPv6:</label>
+                            <input type="checkbox" id="pw-filter-ipv6" class="switch">
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>DNS Redirect:</label>
+                            <input type="checkbox" id="pw-dns-redirect" class="switch">
+                        </div>
+                        
+                        <div class="form-row">
+                            <label>Force HTTPS SOA:</label>
+                            <input type="checkbox" id="pw-force-https" class="switch">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tab Content: Node List -->
+            <div id="tab-nodelist" class="tab-content">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Nodes</h3>
+                        <button class="btn btn-primary" id="btn-add-node">+ Add Node</button>
+                    </div>
+                    <div id="node-list-container">
+                        <p>Loading nodes...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tab Content: Node Config -->
+            <div id="tab-nodeconfig" class="tab-content">
+                <div class="section">
+                    <h3>Node Configuration</h3>
+                    <div id="node-config-form">
+                        <p>Select a node from Node List to edit, or click Add Node to create new one.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab Content: Passwall Logs -->
+            <div id="tab-passwallogs" class="tab-content">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Passwall Logs</h3>
+                        <div class="log-status">
+                            <span class="log-indicator live"></span>
+                            <span id="pw-log-status-text">Live</span>
+                        </div>
+                    </div>
+                    <div class="logs-toolbar">
+                        <button class="btn btn-sm btn-primary" id="btn-pw-pause">⏸️ Pause</button>
+                        <button class="btn btn-sm btn-warning" id="btn-pw-clear">🗑️ Clear Display</button>
+                        <button class="btn btn-sm btn-info" id="btn-pw-download">⬇️ Download</button>
+                    </div>
+                    <div class="log-container">
+                        <div id="pw-log-content">Loading logs...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Network -->
+        <div id="page-network" class="page">
+            <div class="page-header">
+                <h2>Network</h2>
+                <p>Network configuration</p>
+            </div>
+            
+            <!-- Network Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="interfaces">🔌 Interfaces</button>
+                <button class="tab-btn" data-tab="dhcp">📡 DHCP & DNS</button>
+                <button class="tab-btn" data-tab="firewall">🔥 Firewall</button>
+                <button class="tab-btn" data-tab="diagnostics">🔍 Diagnostics</button>
+            </div>
+            
+            <!-- Tab: Interfaces -->
+            <div id="tab-interfaces" class="tab-content active">
+                <div class="section">
+                    <h3>Network Interfaces</h3>
+                    <div id="interfaces-list" class="loading">Loading interfaces...</div>
+                </div>
+            </div>
+            
+            <!-- Tab: DHCP & DNS -->
+            <div id="tab-dhcp" class="tab-content">
+                <div class="section">
+                    <h3>Active DHCP Leases</h3>
+                    <div id="dhcp-leases" class="loading">Loading...</div>
+                </div>
+                
+                <div class="section">
+                    <h3>DNS Servers</h3>
+                    <div id="dns-servers" class="loading">Loading...</div>
+                    <div style="margin-top: 15px;">
+                        <button onclick="changeDNS()" class="btn btn-primary">Change DNS</button>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h3>Static Leases</h3>
+                    <div id="static-leases" class="loading">Loading...</div>
+                </div>
+            </div>
+            
+            <!-- Tab: Firewall -->
+            <div id="tab-firewall" class="tab-content">
+                <div class="section">
+                    <h3>Firewall Rules</h3>
+                    <div id="firewall-rules" class="loading">Loading rules...</div>
+                </div>
+            </div>
+            
+            <!-- Tab: Diagnostics -->
+            <div id="tab-diagnostics" class="tab-content">
+                <div class="section">
+                    <h3>Network Tools</h3>
+                    
+                    <div class="stats-grid">
+                        <!-- Ping Tool -->
+                        <div class="stat-card">
+                            <div class="stat-icon">🏓</div>
+                            <div class="stat-content">
+                                <div class="stat-label">Ping</div>
+                                <input type="text" id="ping-host" class="tool-input" placeholder="Host" value="8.8.8.8">
+                                <input type="number" id="ping-count" class="tool-input" placeholder="Count" value="4" min="1" max="10" style="width: 80px;">
+                                <button onclick="runDiagnostic('ping')" class="btn btn-primary btn-sm">Run Ping</button>
+                                <div id="ping-results" class="tool-results"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- Traceroute Tool -->
+                        <div class="stat-card">
+                            <div class="stat-icon">🗺️</div>
+                            <div class="stat-content">
+                                <div class="stat-label">Traceroute</div>
+                                <input type="text" id="trace-host" class="tool-input" placeholder="Host" value="google.com">
+                                <button onclick="runDiagnostic('traceroute')" class="btn btn-primary btn-sm">Run Traceroute</button>
+                                <div id="trace-results" class="tool-results"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- DNS Lookup Tool -->
+                        <div class="stat-card">
+                            <div class="stat-icon">🔍</div>
+                            <div class="stat-content">
+                                <div class="stat-label">DNS Lookup</div>
+                                <input type="text" id="nslookup-host" class="tool-input" placeholder="Domain" value="google.com">
+                                <button onclick="runDiagnostic('nslookup')" class="btn btn-primary btn-sm">Lookup</button>
+                                <div id="nslookup-results" class="tool-results"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Advanced -->
+        <div id="page-advanced" class="page">
+            <div class="page-header">
+                <h2>Advanced</h2>
+                <p>System administration</p>
+            </div>
+            
+            <!-- Administration Grid -->
+            <div class="section">
+                <h3>🔧 Administration</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">🔐</div>
+                        <div class="stat-content">
+                            <div class="stat-label">SSH Port</div>
+                            <input type="number" id="ssh-port" class="tool-input" placeholder="22">
+                            <button onclick="setSSHPort()" class="btn btn-primary btn-sm">Change</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">🌐</div>
+                        <div class="stat-content">
+                            <div class="stat-label">LuCI Port</div>
+                            <input type="number" id="luci-port" class="tool-input" placeholder="80">
+                            <button onclick="setLuCIPort()" class="btn btn-primary btn-sm">Change</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">🔑</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Root Password</div>
+                            <input type="password" id="root-password" class="tool-input" placeholder="New password">
+                            <button onclick="setPassword()" class="btn btn-primary btn-sm">Change</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Software Management -->
+            <div class="section">
+                <h3>📦 Software</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">🔄</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Update Package Lists</div>
+                            <button onclick="updatePackageLists()" class="btn btn-primary">Update Lists</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">📋</div>
+                        <div class="stat-content">
+                            <div class="stat-label">View All Packages</div>
+                            <button onclick="loadPackages()" class="btn btn-success">Open List</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">⬇️</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Install Package</div>
+                            <input type="text" id="package-name" class="tool-input" placeholder="Package name">
+                            <button onclick="installPackage()" class="btn btn-success">Install</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="packages-list" style="margin-top: 20px; display: none;"></div>
+            </div>
+            
+            <!-- Backup / Restore & Reboot -->
+            <div class="section">
+                <h3>💾 System Management</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">📸</div>
+                        <div class="stat-content">
+                            <div class="stat-label">System Snapshot</div>
+                            <button onclick="createSnapshot()" class="btn btn-success" id="btn-snapshot">Create Snapshot</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">📥</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Backup Config</div>
+                            <button onclick="backupConfig()" class="btn btn-primary">Download Backup</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">📤</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Restore Config</div>
+                            <input type="file" id="restore-file" style="display:none">
+                            <button onclick="document.getElementById('restore-file').click()" class="btn btn-warning">Restore Backup</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">🕐</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Startup Services</div>
+                            <button onclick="loadServices()" class="btn btn-primary">Manage</button>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">🔄</div>
+                        <div class="stat-content">
+                            <div class="stat-label">System Reboot</div>
+                            <button onclick="rebootSystem()" class="btn btn-danger">Reboot System</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="services-list" style="margin-top: 20px; display: none;"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- OpenVPN Config Editor Modal -->
+    <div id="openvpn-editor-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999;">
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:20px; border-radius:8px; width:80%; max-width:800px; max-height:80vh; overflow:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+                <h3 id="editor-title">Edit Config</h3>
+                <div id="editor-warnings" style="color:#d32f2f; font-size:13px; text-align:right; max-width:400px;"></div>
+            </div>
+            <textarea id="editor-content" style="width:100%; height:400px; font-family:monospace; padding:10px; border:1px solid #ddd; border-radius:4px;"></textarea>
+            <div style="margin-top:15px; display:flex; gap:10px; justify-content:flex-end;">
+                <button class="btn btn-primary" id="btn-save-config">💾 Save</button>
+                <button class="btn btn-secondary" id="btn-close-editor">❌ Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Logs Modal -->
+    <div id="logs-modal" class="logs-modal" onclick="if(event.target===this) closeLogsModal()">
+        <div class="logs-modal-content">
+            <div class="logs-modal-header">
+                <div class="logs-modal-title" id="logs-modal-title">OpenVPN Logs</div>
+                <button class="logs-modal-close" onclick="closeLogsModal()">×</button>
+            </div>
+            <div class="logs-modal-toolbar">
+                <button class="btn btn-sm btn-primary" id="logs-pause-btn">⏸️ Pause</button>
+                <button class="btn btn-sm btn-success" id="logs-refresh-btn">🔄 Refresh</button>
+                <button class="btn btn-sm btn-warning" id="logs-clear-btn">🗑️ Clear</button>
+                <button class="btn btn-sm btn-info" id="logs-download-btn">⬇️ Download</button>
+                <div class="log-status" style="margin-left:auto;">
+                    <span class="log-indicator live"></span>
+                    <span id="log-status-text">Live</span>
+                </div>
+            </div>
+            <div class="logs-modal-body" id="logs-modal-body">
+                Loading logs...
+            </div>
+            <div class="logs-modal-footer">
+                <button class="btn btn-secondary" onclick="closeLogsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="node-form-dynamic.js"></script>
+    <script src="app.js"></script>
+    <script src="network.js?v=12"></script>
+    <script src="advanced.js?v=12"></script>
+</body>
+</html>

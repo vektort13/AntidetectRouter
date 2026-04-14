@@ -1,0 +1,55 @@
+#!/bin/sh
+# OpenVPN hotplug helper for DNS sync
+
+ACTION="$1"
+INSTANCE="$2"
+LOG_FILE="/tmp/openvpn-hotplug.log"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [$ACTION/$INSTANCE] $*" >> "$LOG_FILE"
+}
+
+apply_pushed_dns() {
+    DNS_LIST=""
+
+    for var in $(env | grep '^foreign_option_' | cut -d= -f1); do
+        value="$(printenv "$var")"
+        case "$value" in
+            *"dhcp-option DNS "*)
+                dns="$(echo "$value" | awk '{print $3}')"
+                [ -n "$dns" ] && DNS_LIST="$DNS_LIST $dns"
+                ;;
+        esac
+    done
+
+    if [ -z "$DNS_LIST" ]; then
+        log_msg "No pushed DNS found"
+        return 0
+    fi
+
+    uci -q delete dhcp.@dnsmasq[0].server
+    for dns in $DNS_LIST; do
+        uci add_list dhcp.@dnsmasq[0].server="$dns"
+    done
+
+    if uci commit dhcp; then
+        /etc/init.d/dnsmasq reload >/dev/null 2>&1
+        log_msg "Applied pushed DNS:$DNS_LIST"
+    else
+        log_msg "Failed to commit dnsmasq DNS"
+    fi
+}
+
+case "$ACTION" in
+    up)
+        apply_pushed_dns
+        ;;
+    down)
+        log_msg "Tunnel down"
+        ;;
+    *)
+        log_msg "Unknown action: $ACTION"
+        ;;
+esac
+
+exit 0
